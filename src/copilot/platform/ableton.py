@@ -7,6 +7,7 @@ tools live here so the rest of the runtime stays OS-agnostic.
 
 from __future__ import annotations
 
+import ntpath
 import platform
 import shutil
 import subprocess
@@ -125,7 +126,7 @@ class WindowsAbletonDriver(PlatformAbletonDriver):
         return ("taskkill",)
 
     def terminate_command(self, executable: str) -> list[str]:
-        return ["taskkill", "/IM", Path(executable).name, "/F"]
+        return ["taskkill", "/IM", ntpath.basename(executable), "/F"]
 
     def request_shutdown_command(self, pid: int) -> list[str]:
         return ["taskkill", "/PID", str(pid), "/T"]
