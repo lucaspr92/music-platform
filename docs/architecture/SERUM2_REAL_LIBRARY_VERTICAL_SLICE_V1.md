@@ -39,3 +39,15 @@ Producer-lane milestone to prove real local Serum2 preset-first inputs are disco
 - BASS PRESET CANDIDATES: VERIFIED
 - DETERMINISTIC SELECTION: VERIFIED
 - Remaining stages: typed action execution via ProductionCompiler/SafeWrite + readback + preview.
+
+
+## Update: preset-first role selection bridge
+- Added `src/copilot/producer/serum2_preset_first.py`:
+  - `select_real_serum2_preset(...)` produces deterministic role-safe selection reports from the real local catalog.
+  - `identify_serum2_device(...)` gives strongest available session identity evidence without writing.
+- Added tests: `tests/test_serum2_preset_first.py`.
+- Added artifact: `logs/serum2_preset_selection_v1.json`.
+
+## Current blocker for next phase
+- Real Ableton runtime not active (`127.0.0.1:9877` listener absent), so
+  safe write execution for "load Serum2 device + apply selected preset" was not run in this pass.
