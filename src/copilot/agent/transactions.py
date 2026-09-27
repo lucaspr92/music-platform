@@ -503,6 +503,43 @@ class TransactionManager:
             if expected_ids.isdisjoint(actual_ids):
                 return ReconcileResult.ABSENT
             return ReconcileResult.AMBIGUOUS
+        if operation == "load_device_preset":
+            expected_digest = str(expected_after.get("param_digest", ""))
+            expected_device_id = str(expected_after.get("device_stable_id", ""))
+            if expected_device_id:
+                matches = [
+                    device
+                    for track in session.tracks
+                    for device in track.devices
+                    if device.stable_id == expected_device_id
+                ]
+                if len(matches) == 1:
+                    return ReconcileResult.SATISFIED
+                if not matches:
+                    return ReconcileResult.ABSENT
+                return ReconcileResult.AMBIGUOUS
+            if not expected_digest:
+                return ReconcileResult.AMBIGUOUS
+            def _digest(params):
+                rows = []
+                for item in params:
+                    try:
+                        rows.append((int(item.index), round(float(item.value), 6)))
+                    except Exception:
+                        continue
+                rows.sort(key=lambda r: r[0])
+                return __import__("json").dumps(rows, separators=(",", ":"))
+            matches = [
+                device
+                for track in session.tracks
+                for device in track.devices
+                if _digest(device.parameters) == expected_digest
+            ]
+            if len(matches) == 1:
+                return ReconcileResult.SATISFIED
+            if not matches:
+                return ReconcileResult.ABSENT
+            return ReconcileResult.AMBIGUOUS
         if operation in {"set_mixer_volume", "set_device_parameter", "set_track_name"}:
             return (
                 ReconcileResult.SATISFIED
@@ -626,6 +663,17 @@ class TransactionManager:
                 locator.parameter_index,
                 float(params["value"]),
             )
+            return
+        if op == "restore_device_parameters":
+            if locator.device_index is None:
+                raise RollbackConflict("Device parameter-restore inverse missing current device locator")
+            for item in params.get("items", []):
+                self.daw.set_device_parameter(
+                    locator.track_index,
+                    locator.device_index,
+                    int(item["parameter_index"]),
+                    float(item["value"]),
+                )
             return
         if op == "delete_device":
             if locator.device_index is None:

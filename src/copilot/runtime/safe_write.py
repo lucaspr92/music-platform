@@ -102,6 +102,17 @@ def _sample_reference_matches(observed_uri: str | None, expected_uri: str) -> bo
     return Path(observed).name == Path(expected).name
 
 
+def _device_param_digest(parameters: list[dict[str, Any]] | None) -> str:
+    rows = []
+    for item in parameters or []:
+        try:
+            rows.append((int(item.get("index", -1)), round(float(item.get("value", 0.0)), 6)))
+        except Exception:
+            continue
+    rows.sort(key=lambda r: r[0])
+    return json.dumps(rows, separators=(",", ":"))
+
+
 def _track_fingerprint_key(track: TrackState) -> str:
     """Canonical structural identity used when a session incarnation changes."""
     return json.dumps(fingerprint_track(track), sort_keys=True, separators=(",", ":"))
@@ -927,7 +938,7 @@ class SafeWriteExecutor:
         if track is None:
             return snapshot_guard_state(session, target_name)
         guard = snapshot_guard_state(session, target_name)
-        if step.action_type in {"LOAD_DEVICE", "SET_DEVICE_PARAMETER"}:
+        if step.action_type in {"LOAD_DEVICE", "LOAD_DEVICE_PRESET", "SET_DEVICE_PARAMETER"}:
             guard["device_ids"] = [item.stable_id for item in track.devices]
         if step.action_type == "SET_DEVICE_PARAMETER":
             guard["device_values"] = {
@@ -1013,6 +1024,17 @@ class SafeWriteExecutor:
                 clip = next((item for item in track.clips if item.slot_index == clip_index), None)
                 if clip is not None:
                     return (MutationFailure.PRECONDITION_FAILED, f"clip slot occupied: {clip_index}")
+                if not step.rollback.prepared:
+                    return (MutationFailure.PRECONDITION_FAILED, f"rollback not prepared for {step.action_id}")
+                continue
+            if step.action_type == "LOAD_DEVICE_PRESET":
+                if track is None:
+                    return (MutationFailure.TARGET_NOT_FOUND, "preset target track missing")
+                device_index = int(step.arguments["device_index"])
+                if device_index < 0 or device_index >= len(track.devices):
+                    return (MutationFailure.TARGET_NOT_FOUND, "preset target device missing")
+                if not str(step.arguments.get("preset_uri", "")).strip():
+                    return (MutationFailure.PRECONDITION_FAILED, "preset URI is required")
                 if not step.rollback.prepared:
                     return (MutationFailure.PRECONDITION_FAILED, f"rollback not prepared for {step.action_id}")
                 continue
@@ -1113,6 +1135,8 @@ class SafeWriteExecutor:
             return self._execute_duplicate_clip_to_arrangement(step, track, session)
         if step.action_type == "LOAD_SAMPLE":
             return self._execute_load_sample(step, track, session)
+        if step.action_type == "LOAD_DEVICE_PRESET":
+            return self._execute_load_device_preset(step, track, session)
         if step.action_type == "SET_DEVICE_PARAMETER":
             return self._execute_set_device_parameter(step, track, session)
         if step.action_type != CERTIFIED_PRODUCTION_ACTION:
@@ -1413,6 +1437,70 @@ class SafeWriteExecutor:
         )
         return {**result, "arrangement_clip_ids": ids}
 
+    def _execute_load_device_preset(self, step: MutationExecution, track: TrackState | None, session: SessionState) -> dict[str, Any]:
+        if track is None:
+            raise RuntimeError("LOAD_DEVICE_PRESET target track is unresolved")
+        command_id = f"cmd_{uuid4().hex[:12]}"
+        self.transactions.mark_sent(command_id, step.operation)
+        di = int(step.arguments["device_index"])
+        preset_uri = str(step.arguments["preset_uri"])
+        device_stable_id = track.devices[di].stable_id
+        before_params_payload = self.tools.daw.get_device_parameters(track.index, di)
+        before_params = list(before_params_payload.get("parameters") or [])
+        before_digest = _device_param_digest(before_params)
+        snapshot_items = [
+            {"parameter_index": int(item.get("index", -1)), "value": float(item.get("value", 0.0))}
+            for item in before_params
+            if int(item.get("index", -1)) >= 0
+        ]
+        try:
+            result = self.tools.daw.load_device_preset(track.index, di, preset_uri)
+        except WriteInDoubt as exc:
+            after_payload = self.tools.daw.get_device_parameters(track.index, di)
+            after_params = list(after_payload.get("parameters") or [])
+            after_digest = _device_param_digest(after_params)
+            if after_digest == before_digest:
+                raise WriteInDoubt(step.operation, command_id) from exc
+            result = {"reconciled": True, "param_digest": after_digest}
+
+        after_payload = self.tools.daw.get_device_parameters(track.index, di)
+        after_params = list(after_payload.get("parameters") or [])
+        after_digest = _device_param_digest(after_params)
+
+        step.expected_before["param_digest"] = before_digest
+        step.expected_after["param_digest"] = after_digest
+        step.expected_after["preset_uri"] = preset_uri
+        step.expected_after["device_stable_id"] = device_stable_id
+        step.rollback.inverse_operation = "restore_device_parameters"
+        step.rollback.inverse_params = {"items": snapshot_items}
+        step.rollback.restore_value = before_digest
+        step.rollback.prepared = True
+
+        self.transactions.record(
+            target_stable_id=track.stable_id,
+            target_locator_at_apply=TargetLocator(track_index=track.index, device_index=di),
+            target_fingerprint=TargetFingerprint(**fingerprint_track(track)),
+            target_name_at_apply=track.name,
+            operation=step.operation,
+            before={"param_digest": before_digest},
+            after={"param_digest": after_digest, "preset_uri": preset_uri, "device_stable_id": device_stable_id},
+            expected_after={"param_digest": after_digest, "preset_uri": preset_uri, "device_stable_id": device_stable_id},
+            inverse_operation="restore_device_parameters",
+            inverse_params={"items": snapshot_items},
+            command_id=command_id,
+            expected_revision=session.revision,
+        )
+        changed = after_digest != before_digest
+        return {
+            **(result if isinstance(result, dict) else {}),
+            "device_index": di,
+            "preset_uri": preset_uri,
+            "param_digest_before": before_digest,
+            "param_digest_after": after_digest,
+            "param_digest_changed": changed,
+            "device_stable_id": device_stable_id,
+        }
+
     def _execute_set_device_parameter(self, step: MutationExecution, track: TrackState | None, session: SessionState) -> dict[str, Any]:
         if track is None:
             raise RuntimeError("SET_DEVICE_PARAMETER target track is unresolved")
@@ -1538,6 +1626,25 @@ class SafeWriteExecutor:
                 if not matched:
                     return rows, (MutationFailure.READBACK_MISMATCH, "loaded sample missing or mismatched on readback")
                 continue
+            if step.action_type == "LOAD_DEVICE_PRESET":
+                target = next(item for item in intent.targets if item.action_id == step.action_id)
+                track = session.track_by_id(target.stable_id)
+                di = int(step.arguments["device_index"])
+                payload = self.tools.daw.get_device_parameters(track.index, di)
+                observed_digest = _device_param_digest(payload.get("parameters") or [])
+                expected_digest = str(step.expected_after.get("param_digest", ""))
+                matched = bool(expected_digest) and observed_digest == expected_digest
+                rows.append(MutationReadback(
+                    action_id=step.action_id,
+                    parameter="device.preset_param_digest",
+                    expected=expected_digest,
+                    observed=observed_digest,
+                    matched=matched,
+                    authoritative=True,
+                ))
+                if not matched:
+                    return rows, (MutationFailure.READBACK_MISMATCH, "device preset digest mismatch on readback")
+                continue
             if step.action_type == "SET_DEVICE_PARAMETER":
                 target = next(item for item in intent.targets if item.action_id == step.action_id)
                 track = session.track_by_id(target.stable_id)
@@ -1657,6 +1764,24 @@ class SafeWriteExecutor:
                 if present:
                     return rows, (MutationFailure.ROLLBACK_FAILED, "arrangement clip still present after rollback")
                 continue
+            if step.action_type == "LOAD_DEVICE_PRESET":
+                base = diff_guard_state(
+                    guards[target.name_at_plan],
+                    snapshot_guard_state(after, target.name_at_plan),
+                    expected_volume_delta_target="__none__",
+                )
+                unexpected.extend(base["unexpected_mutations"])
+                track_after = after.track_by_id(target.stable_id)
+                di = int(step.arguments["device_index"])
+                payload = self.tools.daw.get_device_parameters(track_after.index, di)
+                actual_digest = _device_param_digest(payload.get("parameters") or [])
+                expected_digest = str(step.expected_after.get("param_digest", ""))
+                if not expected_digest or actual_digest != expected_digest:
+                    unexpected.append({"action_id": target.action_id, "kind": "unexpected_preset_state"})
+                before_devices = set(guards[target.name_at_plan].get("device_ids", []))
+                if {item.stable_id for item in track_after.devices} != before_devices:
+                    unexpected.append({"action_id": target.action_id, "kind": "unexpected_device_state"})
+                continue
             if step.action_type == "SET_DEVICE_PARAMETER":
                 base = diff_guard_state(
                     guards[target.name_at_plan],
@@ -1750,6 +1875,17 @@ class SafeWriteExecutor:
                 rows.append(MutationReadback(action_id=step.action_id, parameter=parameter, expected=False, observed=present, matched=not present, authoritative=True, detail="rollback"))
                 if present:
                     return rows, (MutationFailure.ROLLBACK_FAILED, "loaded sample still present after rollback")
+                continue
+            if step.action_type == "LOAD_DEVICE_PRESET":
+                target_track = session.track_by_id(target.stable_id)
+                di = int(step.arguments["device_index"])
+                payload = self.tools.daw.get_device_parameters(target_track.index, di)
+                observed = _device_param_digest(payload.get("parameters") or [])
+                expected = str(step.rollback.restore_value or step.expected_before.get("param_digest", ""))
+                matched = bool(expected) and observed == expected
+                rows.append(MutationReadback(action_id=step.action_id, parameter="device.preset_param_digest", expected=expected, observed=observed, matched=matched, authoritative=True, detail="rollback"))
+                if not matched:
+                    return rows, (MutationFailure.ROLLBACK_FAILED, "device preset rollback mismatch")
                 continue
             if step.action_type == "SET_DEVICE_PARAMETER":
                 target_track = session.track_by_id(target.stable_id)

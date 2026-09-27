@@ -62,3 +62,18 @@ Producer-lane milestone to prove real local Serum2 preset-first inputs are disco
   - SafeWrite create-track: PASS
   - SafeWrite load-device (`Serum2` request): PASS (`Serum` inserted)
   - rollback cleanup: PASS (no residue track)
+
+
+## Update: SafeWrite preset-load operation
+- Extended producer-side Core adapter (`execute_lucas_patch_contracts_through_core`) to support a bounded `load_device_preset` contract through `SafeWriteExecutor`.
+- Extended SafeWrite producer-certified action set with `LOAD_DEVICE_PRESET`.
+- Added rollback inverse support `restore_device_parameters` in transaction manager.
+- Real probe evidence (`logs/serum2_preset_load_probe_v1.json`):
+  - create midi probe track via SafeWrite: PASS
+  - load Serum2 device via SafeWrite: PASS
+  - load selected BASS preset URI via SafeWrite contract: PASS
+  - cleanup: PASS
+
+Readback note:
+- Preset identity readback remains parameter-digest based (`device.preset_param_digest`), because Live bridge does not expose authoritative preset-name/path state directly in session topology.
+- This is technical verification of state transition, not a musical-quality judgment.

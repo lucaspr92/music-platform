@@ -393,14 +393,13 @@ def test_supported_lucas_parameter_intent_uses_core_safe_write(tmp_path: Path):
     assert daw.snapshot().tracks[0].devices[1].parameters[1].value == pytest.approx(0.6)
 
 
-def test_unsupported_lucas_soniq_intent_is_deferred_without_write(tmp_path: Path):
+def test_lucas_device_preset_intent_runs_through_core_safe_write(tmp_path: Path):
     daw = MockAbletonAdapter()
     daw.connect()
     daw.create_audio_track("Existing")
     daw.load_instrument_or_effect(0, "Operator")
     session = daw.snapshot()
     attach_tokens(session)
-    before = daw.snapshot()
 
     report = execute_lucas_patch_contracts_through_core(
         contracts=[
@@ -408,7 +407,7 @@ def test_unsupported_lucas_soniq_intent_is_deferred_without_write(tmp_path: Path
                 "operation": "load_device_preset",
                 "track": "Existing",
                 "device": "Operator",
-                "preset_uri": "preset:unsupported",
+                "preset_uri": "query:UserPresets#Operator#Init",
             }
         ],
         session=session,
@@ -416,11 +415,9 @@ def test_unsupported_lucas_soniq_intent_is_deferred_without_write(tmp_path: Path
         persist_dir=tmp_path,
     )
 
-    after = daw.snapshot()
-    assert report["status"] == "EXECUTION_DEFERRED"
-    assert report["accepted"] == []
+    assert report["status"] == "SAFE_WRITE_COMPLETE"
+    assert report["accepted"][0]["action_type"] == "LOAD_DEVICE_PRESET"
     assert report["direct_lucas_writes"] == 0
-    assert after.state_hash == before.state_hash
 
 
 def test_vibe_production_path_has_no_direct_soniq_writer():

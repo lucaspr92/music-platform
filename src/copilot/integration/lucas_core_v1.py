@@ -712,7 +712,7 @@ def execute_lucas_patch_contracts_through_core(
     current = session
     for cidx, contract in enumerate(contracts or []):
         operation = str(contract.get("operation", "parameter_patch"))
-        if operation not in {"parameter_patch", "set_device_parameter", ""}:
+        if operation not in {"parameter_patch", "set_device_parameter", "load_device_preset", ""}:
             deferred.append({"index": cidx, "status": "EXECUTION_DEFERRED", "reason": "UNSUPPORTED_OPERATION"})
             continue
         track_name = str(contract.get("track", ""))
@@ -723,6 +723,75 @@ def execute_lucas_patch_contracts_through_core(
         device = next((d for d in track.devices if d.name.lower() == device_name.lower()), None) if track else None
         if track is None or device is None:
             deferred.append({"index": cidx, "status": "EXECUTION_DEFERRED", "reason": "TARGET_NOT_FOUND"})
+            continue
+        if operation == "load_device_preset":
+            from copilot.daw.identities import fingerprint_track
+            from copilot.daw.object_ref import ref_from_track
+            from copilot.schemas.safe_write import (
+                KIND_PRODUCER_EXECUTION_V1,
+                MutationExecution,
+                MutationIntent,
+                MutationRollback,
+                MutationTarget,
+                RollbackReversibility,
+            )
+            from copilot.schemas.transaction import TargetFingerprint, TargetLocator
+
+            preset_uri = str(contract.get("preset_uri", "")).strip()
+            if not preset_uri:
+                deferred.append({"index": cidx, "status": "EXECUTION_DEFERRED", "reason": "PRESET_URI_REQUIRED"})
+                continue
+            action_id = f"lucas_preset_{cidx}"
+            intent = MutationIntent(
+                plan_id=f"lucas_patch_preset_{cidx}",
+                kind=KIND_PRODUCER_EXECUTION_V1,
+                user_intent="Lucas preset intent via Core SafeWrite",
+                project_identity=current.project_identity or "",
+                expected_revision=current.revision,
+                expected_session_hash=current.state_hash,
+                expected_project_token=current.project_token or "",
+                expected_audible_token=current.audible_token or "",
+                expected_incarnation_id=current.session_incarnation_id or "",
+                targets=[
+                    MutationTarget(
+                        action_id=action_id,
+                        ref=ref_from_track(track, project_identity=current.project_identity or "").model_dump(mode="json"),
+                        stable_id=track.stable_id,
+                        name_at_plan=track.name,
+                        fingerprint=TargetFingerprint(**fingerprint_track(track)),
+                        locator=TargetLocator(track_index=track.index, device_index=device.index),
+                        session_incarnation_id=current.session_incarnation_id or "",
+                    )
+                ],
+                executions=[
+                    MutationExecution(
+                        action_id=action_id,
+                        action_type="LOAD_DEVICE_PRESET",
+                        operation="load_device_preset",
+                        arguments={"device_index": int(device.index), "preset_uri": preset_uri},
+                        expected_before={"device_count": len(track.devices)},
+                        expected_after={},
+                        certified=True,
+                        rollback=MutationRollback(
+                            inverse_operation="restore_device_parameters",
+                            inverse_params={"items": []},
+                            reversibility=RollbackReversibility.INDEPENDENT,
+                            prepared=True,
+                        ),
+                    )
+                ],
+            )
+            result = executor.run(intent)
+            if not result.ok:
+                deferred.append({"index": cidx, "status": "EXECUTION_DEFERRED", "reason": result.error or "SAFE_WRITE_FAILED"})
+                continue
+            accepted.append({
+                "index": cidx,
+                "status": "VERIFIED",
+                "action_type": "LOAD_DEVICE_PRESET",
+                "readbacks": [row.model_dump(mode="json") for row in result.readbacks],
+                "preset_uri": preset_uri,
+            })
             continue
         constraints = dict(contract.get("constraints") or {})
         max_delta = float(constraints.get("max_delta_norm", 0.35))
