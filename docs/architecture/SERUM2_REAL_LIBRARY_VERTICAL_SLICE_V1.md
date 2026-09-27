@@ -51,3 +51,14 @@ Producer-lane milestone to prove real local Serum2 preset-first inputs are disco
 ## Current blocker for next phase
 - Real Ableton runtime not active (`127.0.0.1:9877` listener absent), so
   safe write execution for "load Serum2 device + apply selected preset" was not run in this pass.
+
+
+## Update: external plugin URI resolution for SafeWrite device-load
+- Extended `AbletonTcpAdapter.load_instrument_or_effect` with plugin-aware URI resolution:
+  - multi-category `search_browser` probing (`audio_effects`, `midi_effects`, `instruments`, `drums`, `sounds`, `all`)
+  - fallback recursive `browse_path(["plugins"])` resolution for third-party plugins not indexed by bridge `search_browser(all)`.
+- Added tests: `tests/test_ableton_tcp_plugin_resolution.py`.
+- Real probe evidence (`logs/serum2_safe_device_probe_v2.json`):
+  - SafeWrite create-track: PASS
+  - SafeWrite load-device (`Serum2` request): PASS (`Serum` inserted)
+  - rollback cleanup: PASS (no residue track)

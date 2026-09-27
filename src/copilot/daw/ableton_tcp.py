@@ -933,24 +933,86 @@ class AbletonTcpAdapter(DawAdapter):
     def browse_path(self, path: list[str]) -> dict[str, Any]:
         return self._command("browse_path", {"path": path})
 
+    def _resolve_device_uri_by_search(self, name: str) -> str | None:
+        """Resolve a device URI from browser search categories.
+
+        `search_browser(category=all)` in the vendored bridge omits plugins, so
+        we probe additional categories and keep deterministic ranking.
+        """
+        normalized = " ".join(name.casefold().split())
+        best: tuple[int, int, str] | None = None
+        for category in ("audio_effects", "midi_effects", "instruments", "drums", "sounds", "all"):
+            try:
+                sr = self.search_browser(name, category)
+            except DawError:
+                continue
+            results = sr.get("results", []) if isinstance(sr, dict) else []
+            for row in results:
+                if not bool(row.get("is_device")):
+                    continue
+                uri = str(row.get("uri") or "")
+                if not uri:
+                    continue
+                row_name = " ".join(str(row.get("name") or "").casefold().split())
+                exact = 1 if row_name == normalized else 0
+                contains = 1 if (normalized in row_name or row_name in normalized) else 0
+                score = (exact, contains, uri)
+                if best is None or score > best:
+                    best = score
+        return None if best is None else best[2]
+
+    def _resolve_device_uri_by_plugins_browse(self, name: str) -> str | None:
+        """Fallback plugin resolver via browse_path(['plugins']) tree walk."""
+        normalized = " ".join(name.casefold().split())
+        stack: list[list[str]] = [["plugins"]]
+        visited: set[tuple[str, ...]] = set()
+        matches: list[tuple[int, str]] = []
+        max_depth = 6
+        max_nodes = 3000
+        scanned = 0
+        while stack and scanned < max_nodes:
+            path = stack.pop()
+            key = tuple(path)
+            if key in visited:
+                continue
+            visited.add(key)
+            try:
+                payload = self.browse_path(path)
+            except DawError:
+                continue
+            items = payload.get("items", []) if isinstance(payload, dict) else []
+            for item in items:
+                scanned += 1
+                item_name = str(item.get("name") or "")
+                item_norm = " ".join(item_name.casefold().split())
+                is_folder = bool(item.get("is_folder"))
+                is_loadable = bool(item.get("is_loadable"))
+                uri = str(item.get("uri") or "")
+                if uri and is_loadable and (normalized == item_norm or normalized in item_norm or item_norm in normalized):
+                    exact = 2 if item_norm == normalized else 1
+                    matches.append((exact, uri))
+                if is_folder and len(path) < max_depth and item_name:
+                    stack.append(path + [item_name])
+        if not matches:
+            return None
+        matches.sort(key=lambda row: (row[0], row[1]), reverse=True)
+        return matches[0][1]
+
     def load_instrument_or_effect(
         self, track_index: int, uri: str
     ) -> dict[str, Any]:
         # The live bridge needs a browser query URI (e.g. "query:AudioFx#EQ%20Eight").
-        # Accept a bare name ("EQ Eight") OR a mock-style path ("devices/audio-effects/EQ Eight"):
-        # extract the device name and resolve via search_browser, CACHED so a 52-device
-        # build does not re-search the browser for every load.
+        # Accept a bare name ("EQ Eight") OR a mock-style path ("devices/audio-effects/EQ Eight").
         if not uri.startswith("query:"):
             name = uri.rsplit("/", 1)[-1] if "/" in uri else uri
-            if name not in self._device_uri_cache:
-                sr = self.search_browser(name, "audio_effects")
-                results = sr.get("results", []) if isinstance(sr, dict) else []
-                if not results:
-                    sr = self.search_browser(name, "all")
-                    results = sr.get("results", []) if isinstance(sr, dict) else []
-                device = next((r for r in results if r.get("is_device")), None)
-                self._device_uri_cache[name] = device.get("uri", uri) if device else uri
-            uri = self._device_uri_cache[name]
+            cache_key = " ".join(name.casefold().split())
+            cached = self._device_uri_cache.get(cache_key)
+            if not cached:
+                resolved = self._resolve_device_uri_by_search(name)
+                if not resolved:
+                    resolved = self._resolve_device_uri_by_plugins_browse(name)
+                self._device_uri_cache[cache_key] = resolved or uri
+            uri = self._device_uri_cache[cache_key]
         return self._command(
             "load_instrument_or_effect",
             {"track_index": track_index, "uri": uri},
