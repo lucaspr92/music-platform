@@ -8,6 +8,7 @@ from typing import Any
 
 from copilot.producer.goal import ProducerGoal
 from copilot.producer.track_spec import TrackSpec
+from copilot.musicplan.score_compiler import ScoreBinding, verify_score_geometry
 
 
 def section_window_specs(spec: TrackSpec) -> dict[str, dict[str, tuple[float, float]]]:
@@ -30,8 +31,22 @@ def section_window_specs(spec: TrackSpec) -> dict[str, dict[str, tuple[float, fl
 
 def verify_arrangement_timeline(
     spec: TrackSpec, *, tracks: dict[str, int], clips: list[dict[str, Any]],
+    score_bindings: list[ScoreBinding] | None = None,
 ) -> list[str]:
     """Check the persisted clip geometry, not merely SafeWrite-created IDs."""
+    if score_bindings is not None:
+        expected_pairs = {
+            (section.name, role) for section in spec.sections for role in section.active_roles
+        }
+        bound_pairs = {(binding.section, binding.role) for binding in score_bindings}
+        if expected_pairs != bound_pairs:
+            return ["SCORE_ARRANGEMENT_ROLES_NOT_BOUND"]
+        if not score_bindings or not math.isclose(
+            max(binding.start_qn + binding.duration_qn for binding in score_bindings),
+            spec.duration_bars * 4, abs_tol=1e-3, rel_tol=0,
+        ):
+            return ["ARRANGEMENT_DURATION_MISMATCH"]
+        return verify_score_geometry(score_bindings, tracks=tracks, clips=clips)
     reasons: list[str] = []
     parsed: list[tuple[int, float, float]] = []
     for clip in clips:
@@ -176,6 +191,8 @@ def evaluate_delivery(
         failures.append("NO_VERIFIED_PRODUCTION_ACTIONS")
     elif any(row.get("status") != "VERIFIED" for row in actions):
         failures.append("ESSENTIAL_ACTION_UNVERIFIED")
+    if any(row.get("experimental") is True for row in actions):
+        failures.append("HERMES_MIDI_PHRASE_CERTIFICATION_PENDING")
     if unresolved_transactions:
         failures.append("UNRESOLVED_TRANSACTIONS")
     if critique_verdict != "finalize":

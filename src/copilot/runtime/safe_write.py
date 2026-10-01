@@ -35,6 +35,7 @@ from copilot.schemas.safe_write import (
     CERTIFIED_PRODUCTION_ACTION,
     CERTIFIED_PRODUCTION_ACTIONS,
     KIND_PRODUCER_EXECUTION_V1,
+    KIND_EXPERIMENTAL_MIDI_PHRASE_V1,
     PRODUCER_CERTIFIED_ACTIONS,
     KIND_PRODUCTION_MUSICAL,
     MILESTONE,
@@ -53,6 +54,10 @@ from copilot.schemas.safe_write import (
     RollbackReversibility,
 )
 from copilot.schemas.session import SessionState, TrackState
+from copilot.producer.midi_phrase_policy import (
+    MIDI_PHRASE_CAPABILITIES, empty_phrase_slot_blocker, phrase_from_arguments,
+    phrase_preservation_token,
+)
 from copilot.schemas.transaction import (
     TargetFingerprint,
     TargetLocator,
@@ -367,12 +372,19 @@ class SafeWriteExecutor:
         journal: DurableJournal | None = None,
         registry: SafeWriteRegistry | None = None,
         persist_dir: Path | None = None,
+        experimental_midi_track_ids: frozenset[str] = frozenset(),
     ) -> None:
         self.tools = tools
         self.transactions: TransactionManager = tools.transactions
         self.journal = journal if journal is not None else tools.transactions.journal
         self.registry = registry or SafeWriteRegistry()
         self.persist_dir = persist_dir
+        self.experimental_midi_track_ids = experimental_midi_track_ids
+
+    def _action_allowed(self, intent: MutationIntent, action_type: str) -> bool:
+        if intent.kind == KIND_EXPERIMENTAL_MIDI_PHRASE_V1:
+            return bool(self.experimental_midi_track_ids) and action_type == "CREATE_MIDI_PHRASE"
+        return action_is_certified_for_intent(intent, action_type)
 
     def recover(self) -> list[dict[str, Any]]:
         """Crash recovery. Never auto-mutates. Never invents certainty."""
@@ -430,6 +442,16 @@ class SafeWriteExecutor:
     ) -> MutationResult:
         result.phase = MutationPhase.PLAN
         result.lifecycle.append(MutationPhase.PLAN.value)
+
+        if intent.kind == KIND_EXPERIMENTAL_MIDI_PHRASE_V1 and (
+            not self.experimental_midi_track_ids
+            or len(intent.executions) != 1 or len(intent.targets) != 1
+            or intent.executions[0].action_type != "CREATE_MIDI_PHRASE"
+        ):
+            return self._fail(
+                result, MutationFailure.PRECONDITION_FAILED, MutationPhase.PLAN,
+                "MIDI_PHRASE_EXPERIMENT_DISABLED_OR_INVALID",
+            )
 
         if intent.kind == KIND_TEMPORARY_CAPTURE_HOST:
             return self._fail(
@@ -491,7 +513,7 @@ class SafeWriteExecutor:
         uncertified = [
             step.action_type
             for step in intent.executions
-            if not action_is_certified_for_intent(intent, step.action_type)
+            if not self._action_allowed(intent, step.action_type)
         ]
         if uncertified:
             result.phase = MutationPhase.PERSIST_ROLLBACK
@@ -938,6 +960,10 @@ class SafeWriteExecutor:
         if track is None:
             return snapshot_guard_state(session, target_name)
         guard = snapshot_guard_state(session, target_name)
+        if step.action_type == "CREATE_MIDI_PHRASE":
+            guard["phrase_preservation_token"] = phrase_preservation_token(
+                session, excluded_slots={track.stable_id: {int(step.arguments["clip_index"])}},
+            )
         if step.action_type in {"LOAD_DEVICE", "SET_DEVICE_PARAMETER"}:
             guard["device_ids"] = [item.stable_id for item in track.devices]
         if step.action_type == "SET_DEVICE_PARAMETER":
@@ -976,9 +1002,32 @@ class SafeWriteExecutor:
             default=None,
         )
         for step in intent.executions:
-            if not action_is_certified_for_intent(intent, step.action_type):
+            if not self._action_allowed(intent, step.action_type):
                 continue
             track = resolved[step.action_id]
+            if step.action_type == "CREATE_MIDI_PHRASE":
+                if track is None or track.stable_id not in self.experimental_midi_track_ids:
+                    return (MutationFailure.PRECONDITION_FAILED, "MIDI_PHRASE_TRACK_NOT_OWNED")
+                if not MIDI_PHRASE_CAPABILITIES <= set(getattr(self.tools.daw, "capabilities", ())):
+                    return (MutationFailure.PRECONDITION_FAILED, "MIDI_PHRASE_CAPABILITIES_UNAVAILABLE")
+                try:
+                    phrase_from_arguments(step.arguments)
+                    blocker = empty_phrase_slot_blocker(track, step.arguments["clip_index"])
+                except (KeyError, TypeError, ValueError) as exc:
+                    return (MutationFailure.PRECONDITION_FAILED, f"MIDI_PHRASE_INVALID: {exc}")
+                if blocker:
+                    return (MutationFailure.PRECONDITION_FAILED, blocker)
+                observed = phrase_preservation_token(
+                    _session, excluded_slots={track.stable_id: {step.arguments["clip_index"]}},
+                )
+                if (
+                    observed != step.expected_before.get("preservation_token")
+                    or not step.rollback.prepared or step.rollback.inverse_operation != "delete_clip"
+                    or step.expected_before.get("clip_exists") is not False
+                    or step.operation != "create_pattern"
+                ):
+                    return (MutationFailure.PRECONDITION_FAILED, "MIDI_PHRASE_PRESTATE_CHANGED")
+                continue
             if step.action_type == "CREATE_TRACK":
                 expected_track_count = (
                     multi_create_count
@@ -1136,7 +1185,7 @@ class SafeWriteExecutor:
     ) -> dict[str, Any]:
         if step.action_type == "CREATE_TRACK":
             return self._execute_create_track(step, session)
-        if step.action_type == "CREATE_PATTERN":
+        if step.action_type in {"CREATE_PATTERN", "CREATE_MIDI_PHRASE"}:
             return self._execute_create_pattern(step, track, session)
         if step.action_type == "LOAD_DEVICE":
             return self._execute_load_device(step, track, session)
@@ -1528,6 +1577,25 @@ class SafeWriteExecutor:
                 if not matched:
                     return rows, (MutationFailure.READBACK_MISMATCH, "pattern notes missing on readback")
                 continue
+            if step.action_type == "CREATE_MIDI_PHRASE":
+                target = next(item for item in intent.targets if item.action_id == step.action_id)
+                track = session.track_by_id(target.stable_id)
+                clips = [clip for clip in track.clips if clip.slot_index == step.arguments["clip_index"]]
+                clip = clips[0] if len(clips) == 1 else None
+                matched = bool(
+                    clip is not None
+                    and clip.stable_id == step.expected_after.get("clip_stable_id")
+                    and phrase_from_arguments(step.arguments).matches_clip(clip)
+                )
+                rows.append(MutationReadback(
+                    action_id=step.action_id, parameter="clip.midi_phrase",
+                    expected=step.arguments,
+                    observed=clip.model_dump(mode="json") if clip is not None else None,
+                    matched=matched, authoritative=True,
+                ))
+                if not matched:
+                    return rows, (MutationFailure.READBACK_MISMATCH, "MIDI_PHRASE_CONTENT_MISMATCH")
+                continue
             if step.action_type == "LOAD_DEVICE":
                 target = next(item for item in intent.targets if item.action_id == step.action_id)
                 track = session.track_by_id(target.stable_id)
@@ -1649,6 +1717,14 @@ class SafeWriteExecutor:
                 expected_count = int(step.expected_after.get("note_count", 0))
                 if clip is None or len(clip.notes) != expected_count:
                     unexpected.append({"action_id": target.action_id, "kind": "unexpected_pattern_state"})
+                continue
+            if step.action_type == "CREATE_MIDI_PHRASE":
+                expected = guards[target.name_at_plan]["phrase_preservation_token"]
+                observed = phrase_preservation_token(
+                    after, excluded_slots={target.stable_id: {int(step.arguments["clip_index"])}},
+                )
+                if observed != expected:
+                    unexpected.append({"action_id": step.action_id, "kind": "MIDI_PHRASE_OUT_OF_SCOPE_CHANGE"})
                 continue
             if step.action_type == "LOAD_DEVICE":
                 before_ids = set(guards[target.name_at_plan].get("device_ids", []))
@@ -1779,6 +1855,21 @@ class SafeWriteExecutor:
                 # rollback below.  Keeping this branch avoids treating the
                 # now-deleted track as a missing user target.
                 continue
+            if step.action_type == "CREATE_MIDI_PHRASE":
+                track = session.track_by_id(target.stable_id)
+                index = int(step.arguments["clip_index"])
+                matched = (
+                    not any(clip.slot_index == index for clip in track.clips)
+                    and track.empty_clip_slots is not None and index in track.empty_clip_slots
+                )
+                rows.append(MutationReadback(
+                    action_id=step.action_id, parameter="clip.slot_empty",
+                    expected=True, observed=matched, matched=matched,
+                    authoritative=True, detail="rollback",
+                ))
+                if not matched:
+                    return rows, (MutationFailure.ROLLBACK_FAILED, "MIDI_PHRASE_SLOT_NOT_RESTORED")
+                continue
             if step.action_type == "LOAD_DEVICE":
                 target_track = session.track_by_id(target.stable_id)
                 device_id = str(step.expected_after.get("device_stable_id", ""))
@@ -1853,6 +1944,13 @@ class SafeWriteExecutor:
         unexpected: list[dict[str, Any]] = []
         for target in intent.targets:
             step = next(item for item in intent.executions if item.action_id == target.action_id)
+            if step.action_type == "CREATE_MIDI_PHRASE":
+                observed = phrase_preservation_token(
+                    restored, excluded_slots={target.stable_id: {int(step.arguments["clip_index"])}},
+                )
+                if observed != guards[target.name_at_plan]["phrase_preservation_token"]:
+                    unexpected.append({"action_id": step.action_id, "kind": "MIDI_PHRASE_PRESERVATION_NOT_RESTORED"})
+                continue
             if step.action_type == "CREATE_TRACK":
                 before_ids = set(guards[target.name_at_plan].get("track_ids", []))
                 after_ids = {item.stable_id for item in restored.tracks}
@@ -2027,10 +2125,12 @@ class SafeWriteExecutor:
 
 
 def build_safe_write_executor(
-    daw, *, journal_path: Path, persist_dir: Path | None = None
+    daw, *, journal_path: Path, persist_dir: Path | None = None,
+    experimental_midi_track_ids: frozenset[str] = frozenset(),
 ) -> SafeWriteExecutor:
     journal = DurableJournal(journal_path)
     tools = AgentTools(daw, TransactionManager(daw, journal=journal))
     return SafeWriteExecutor(
-        tools, journal=journal, persist_dir=persist_dir or journal_path.parent
+        tools, journal=journal, persist_dir=persist_dir or journal_path.parent,
+        experimental_midi_track_ids=experimental_midi_track_ids,
     )

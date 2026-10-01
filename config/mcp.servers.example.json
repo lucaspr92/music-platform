@@ -1,0 +1,8 @@
+{
+  "mcpServers": {
+    "music-platform": {
+      "command": "copilot-mcp",
+      "args": []
+    }
+  }
+}

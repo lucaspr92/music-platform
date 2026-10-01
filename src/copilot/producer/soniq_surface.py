@@ -9,6 +9,7 @@ import uuid
 from pathlib import Path
 from dataclasses import dataclass, field
 from typing import Any
+from urllib.parse import urlparse
 
 from copilot.daw.adapter import DawError
 from copilot.schemas.session import SessionState
@@ -735,14 +736,28 @@ def _load_preset_snapshot_via_soniq_ws(*, track_name: str, device_name: str, pre
 
 
 
-def _rpc_try_methods(ws, methods: list[str], params: dict[str, Any]) -> tuple[str, Any]:
+def _rpc_try_methods(
+    ws, methods: list[str], params: dict[str, Any], *, deadline: float | None = None,
+) -> tuple[str, Any]:
     last_err: str | None = None
     for method in methods:
+        if deadline is not None:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                raise DawError("SONIQ_READ_DEADLINE_EXCEEDED")
+            ws.settimeout(remaining)
         rid = str(uuid.uuid4())
         ws.send(json.dumps({"jsonrpc": "2.0", "id": rid, "method": method, "params": params}))
         while True:
+            if deadline is not None:
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    raise DawError("SONIQ_READ_DEADLINE_EXCEEDED")
+                ws.settimeout(remaining)
             raw = ws.recv()
             data = json.loads(raw)
+            if not isinstance(data, dict):
+                raise DawError("SONIQ_JSON_RPC_RESPONSE_INVALID")
             # Ignore push notifications and unrelated ids while waiting our response.
             if data.get("id") is None:
                 continue
@@ -753,6 +768,94 @@ def _rpc_try_methods(ws, methods: list[str], params: dict[str, Any]) -> tuple[st
                 break
             return method, data.get("result")
     raise DawError(f"Soniq RPC failed for methods={methods}: {last_err or 'no compatible method'}")
+
+
+def read_soniq_ws_surface(
+    *, track_name: str, device_name: str, timeout_s: float = 6.0,
+) -> dict[str, Any]:
+    """Read the existing local Soniq bridge; no patch/preset mutation or file write."""
+    url = _soniq_ws_url()
+    if not url:
+        raise DawError("SONIQ_WS_URL_NOT_CONFIGURED")
+    parsed = urlparse(url)
+    if (
+        parsed.scheme not in {"ws", "wss"}
+        or parsed.hostname not in {"127.0.0.1", "localhost", "::1"}
+        or parsed.username is not None or parsed.password is not None
+    ):
+        raise DawError("SONIQ_LOCAL_WEBSOCKET_REQUIRED")
+    if not math.isfinite(timeout_s) or not 0 < timeout_s <= 30:
+        raise ValueError("SONIQ_READ_TIMEOUT_INVALID")
+    try:
+        import websocket
+    except ModuleNotFoundError as exc:
+        raise DawError(
+            'SONIQ_DEPENDENCY_REQUIRED: from the repository root run '
+            'python -m pip install -e ".[soniq]"',
+        ) from exc
+    deadline = time.monotonic() + timeout_s
+    try:
+        ws = websocket.create_connection(url, timeout=timeout_s)
+    except (OSError, websocket.WebSocketException) as exc:
+        raise DawError(f"SONIQ_WS_CONNECTION_FAILED: {exc}") from exc
+    try:
+        common = {
+            "track": track_name, "device": device_name,
+            "track_name": track_name, "device_name": device_name,
+        }
+        schema_method, schema = _rpc_try_methods(
+            ws, ["read_vst_schema", "vst.schema", "soniq.vst.schema"],
+            common, deadline=deadline,
+        )
+        if not isinstance(schema, dict):
+            raise DawError("SONIQ_SCHEMA_INVALID")
+        metadata = schema.get("params", schema.get("parameters"))
+        if not isinstance(metadata, list) or not 1 <= len(metadata) <= 8192:
+            raise DawError("SONIQ_PARAMETER_SCHEMA_INVALID")
+        indices = []
+        for row in metadata:
+            if (
+                not isinstance(row, dict) or type(row.get("index")) is not int
+                or row["index"] < 0 or not isinstance(row.get("name"), str)
+                or not row["name"].strip()
+            ):
+                raise DawError("SONIQ_PARAMETER_SCHEMA_INVALID")
+            indices.append(row["index"])
+        if len(indices) != len(set(indices)):
+            raise DawError("SONIQ_PARAMETER_INDEX_AMBIGUOUS")
+        read_method, readback = _rpc_try_methods(
+            ws, ["read_vst_params", "vst.read", "soniq.vst.read"],
+            {**common, "indices": indices, "params": indices}, deadline=deadline,
+        )
+        values = readback if isinstance(readback, list) else (
+            readback.get("params") if isinstance(readback, dict) else None
+        )
+        if not isinstance(values, list) or len(values) != len(indices):
+            raise DawError("SONIQ_PARAMETER_READBACK_INCOMPLETE")
+        observed: dict[int, float] = {}
+        for row in values:
+            if (
+                not isinstance(row, dict) or type(row.get("index")) is not int
+                or type(row.get("value")) not in {int, float}
+                or not math.isfinite(row["value"]) or row["index"] in observed
+            ):
+                raise DawError("SONIQ_PARAMETER_READBACK_INVALID")
+            observed[row["index"]] = float(row["value"])
+        if set(observed) != set(indices):
+            raise DawError("SONIQ_PARAMETER_READBACK_INCOMPLETE")
+        return {
+            "reported_plugin": schema.get("pluginName") or schema.get("plugin"),
+            "requested_device": device_name,
+            "schema_method": schema_method,
+            "read_method": read_method,
+            "parameters": [
+                {**row, "value": observed[row["index"]]} for row in metadata
+            ],
+        }
+    except (OSError, websocket.WebSocketException, json.JSONDecodeError) as exc:
+        raise DawError(f"SONIQ_WS_READ_FAILED: {exc}") from exc
+    finally:
+        ws.close()
 
 
 def _apply_patch_via_soniq_ws(contract: dict[str, Any], *, timeout_s: float = 4.0) -> dict[str, Any]:

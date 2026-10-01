@@ -319,6 +319,16 @@ class AbletonTcpAdapter(DawAdapter):
         self.last_playback = playback
         for index in sorted(infos):
             info = infos[index]
+            slots = info.get("clip_slots")
+            complete_slots = (
+                isinstance(slots, list)
+                and all(
+                    isinstance(slot, dict) and type(slot.get("index")) is int
+                    and slot["index"] == position and type(slot.get("has_clip")) is bool
+                    and (not slot["has_clip"] or isinstance(slot.get("clip"), dict))
+                    for position, slot in enumerate(slots)
+                )
+            )
             role = "midi" if info.get("is_midi_track") else "audio"
             name = info.get("name") or f"Track {index}"
             tracks.append(
@@ -351,6 +361,11 @@ class AbletonTcpAdapter(DawAdapter):
                     ],
                     grouped=bool(info.get("is_grouped", False)),
                     foldable=bool(info.get("is_foldable", False)),
+                    clip_slot_count=len(slots) if complete_slots else None,
+                    empty_clip_slots=(
+                        [slot["index"] for slot in slots if not slot["has_clip"]]
+                        if complete_slots else None
+                    ),
                 )
             )
             clips[index] = []
@@ -375,6 +390,7 @@ class AbletonTcpAdapter(DawAdapter):
                         name=clip.get("name", ""),
                         length_beats=float(clip.get("length", 0.0)),
                         is_midi=bool(info.get("is_midi_track")),
+                        is_audio=bool(info.get("is_audio_track")),
                         notes=notes,
                         sample_uri=clip.get("sample_uri") or clip.get("sample_path") or None,
                     )

@@ -31,6 +31,18 @@ python -m copilot.cli analyze-project "<folder>"
 
 `producer-analyze` remains a low-level debug command. See `docs/architecture/PRODUCER_RUNTIME_V1.md` and `docs/CURRENT_STATE.md`.
 
+The project also exposes AbletonMCP and Serum 2/Soniq tools directly to an MCP
+client, through one local stdio entrypoint:
+
+```powershell
+python -m pip install -e ".[mcp,soniq]"
+python -m copilot.mcp --help
+```
+
+See `config/mcp.servers.example.json` and the MCP section in
+`docs/TECH_HOUSE_PRODUCER.md`. Writes are disabled by default; the new MCP
+interface awaits Hermes validation and does not certify a finished `.als`.
+
 ```bash
 python -m copilot.cli detect
 python -m copilot.cli install-script

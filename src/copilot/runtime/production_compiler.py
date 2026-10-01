@@ -12,6 +12,7 @@ from copilot.daw.object_ref import require_resolved
 from copilot.daw.identities import fingerprint_track
 from copilot.musicplan import (
     _as_ref,
+    _resolve_plan_header,
     validate_duplicate_clip_to_arrangement_plan,
     validate_create_track_plan,
     validate_device_load_plan,
@@ -22,6 +23,7 @@ from copilot.runtime.safe_write import volume_intent
 from copilot.schemas.musicplan import MusicPlan, ProductionActionKind
 from copilot.schemas.safe_write import (
     KIND_PRODUCER_EXECUTION_V1,
+    KIND_EXPERIMENTAL_MIDI_PHRASE_V1,
     MutationExecution,
     MutationIntent,
     MutationRollback,
@@ -30,6 +32,10 @@ from copilot.schemas.safe_write import (
 )
 from copilot.schemas.transaction import TargetFingerprint, TargetLocator
 from copilot.schemas.session import SessionState
+from copilot.producer.midi_phrase_policy import (
+    MIDI_PHRASE_CAPABILITIES, empty_phrase_slot_blocker, phrase_from_arguments,
+    phrase_preservation_token,
+)
 
 
 @dataclass(frozen=True)
@@ -57,10 +63,14 @@ class ProductionCompiler:
             ProductionActionKind.CREATE_PATTERN,
         })
     )
+    experimental_midi_track_ids: frozenset[str] = frozenset()
+    negotiated_capabilities: frozenset[str] = frozenset()
 
     def compile(self, plan: MusicPlan, *, session: SessionState) -> ProductionCompileResult:
         if not plan.actions:
             return ProductionCompileResult(status="PLAN_REJECTED", reasons=("NO_ACTIONS",))
+        if any(action.action_type is ProductionActionKind.CREATE_MIDI_PHRASE for action in plan.actions):
+            return self._compile_existing_midi_phrase(plan, session=session)
         unsupported = tuple(
             action.action_id
             for action in plan.actions
@@ -288,6 +298,82 @@ class ProductionCompiler:
             status="COMPILED",
             intent=intent,
             certified_action_ids=(action.action_id,),
+        )
+
+    def _compile_existing_midi_phrase(
+        self, plan: MusicPlan, *, session: SessionState,
+    ) -> ProductionCompileResult:
+        def rejected(reason: str) -> ProductionCompileResult:
+            return ProductionCompileResult(status="PLAN_REJECTED", reasons=(reason,))
+
+        if not self.experimental_midi_track_ids:
+            return rejected("MIDI_PHRASE_EXPERIMENT_DISABLED")
+        if len(plan.actions) != 1:
+            return rejected("MIDI_PHRASE_SINGLE_ACTION_REQUIRED")
+        if not MIDI_PHRASE_CAPABILITIES <= self.negotiated_capabilities:
+            return rejected("MIDI_PHRASE_CAPABILITIES_UNAVAILABLE")
+        if (
+            not session.connected or not session.project_path
+            or not session.project_path.lower().endswith(".als")
+            or not session.project_identity or not session.session_incarnation_id
+        ):
+            return rejected("MIDI_PHRASE_AUTHORITATIVE_SESSION_REQUIRED")
+        validated, action, track = _resolve_plan_header(
+            plan, session, ProductionActionKind.CREATE_MIDI_PHRASE,
+        )
+        if action is None or track is None:
+            return rejected(validated.rejection_reason or "MIDI_PHRASE_TARGET_UNRESOLVED")
+        if track.stable_id not in self.experimental_midi_track_ids:
+            return rejected("MIDI_PHRASE_TRACK_NOT_OWNED")
+        params = action.params
+        if getattr(params, "kind", None) != "create_pattern":
+            return rejected("MIDI_PHRASE_PARAMS_INVALID")
+        blocker = empty_phrase_slot_blocker(track, params.clip_index)
+        if blocker:
+            return rejected(blocker)
+        if not action.rollback or not action.rollback.prepared or not action.verification:
+            return rejected("MIDI_PHRASE_ROLLBACK_OR_VERIFICATION_MISSING")
+        arguments = {
+            "clip_index": params.clip_index, "length_beats": params.length_beats,
+            "notes": [note.model_dump(mode="json") for note in params.notes],
+        }
+        try:
+            phrase_from_arguments(arguments)
+        except (KeyError, TypeError, ValueError) as exc:
+            return rejected(f"MIDI_PHRASE_INVALID: {exc}")
+        intent = MutationIntent(
+            plan_id=plan.plan_id, kind=KIND_EXPERIMENTAL_MIDI_PHRASE_V1,
+            user_intent=action.reason, project_identity=session.project_identity,
+            expected_revision=session.revision, expected_session_hash=session.state_hash,
+            expected_project_token=session.project_token, expected_audible_token=session.audible_token,
+            expected_incarnation_id=session.session_incarnation_id,
+            targets=[MutationTarget(
+                action_id=action.action_id, ref=action.target.ref, stable_id=track.stable_id,
+                name_at_plan=track.name, fingerprint=TargetFingerprint(**fingerprint_track(track)),
+                locator=TargetLocator(track_index=track.index, clip_index=params.clip_index),
+                session_incarnation_id=session.session_incarnation_id,
+            )],
+            executions=[MutationExecution(
+                action_id=action.action_id, action_type="CREATE_MIDI_PHRASE",
+                operation="create_pattern", arguments=arguments,
+                expected_before={
+                    "clip_exists": False,
+                    "preservation_token": phrase_preservation_token(
+                        session, excluded_slots={track.stable_id: {params.clip_index}},
+                    ),
+                },
+                expected_after={"clip_index": params.clip_index, "note_count": len(params.notes)},
+                certified=False,
+                rollback=MutationRollback(
+                    inverse_operation="delete_clip", prepared=True,
+                    reversibility=RollbackReversibility.INDEPENDENT,
+                ),
+            )],
+        )
+        return ProductionCompileResult(
+            status="COMPILED_EXPERIMENTAL", intent=intent,
+            uncertified_action_ids=(action.action_id,),
+            reasons=("HERMES_VALIDATION_PENDING",),
         )
 
     def _compile_midi_variation(

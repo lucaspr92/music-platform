@@ -73,6 +73,8 @@ CANONICAL_COMMANDS = (
     "producer-analyze",
     "producer-run",
     "produce-tech-house",
+    "producer-context",
+    "producer-supervise",
     "cross-project-validate",
     "import-project",
     "regression-v1",
@@ -90,6 +92,8 @@ Canonical supported envelope:
   project-bootstrap
   producer-analyze         (low-level debug path; prefer analyze-project)
   producer-run --mode analyze|autonomous
+  producer-context         (read-only complete-track planning context; no Live/audio/model)
+  producer-supervise       (record human ALS review in the producer ledger; no Live writes)
   cross-project-validate
   regression-v1
   capabilities
@@ -153,6 +157,8 @@ def main(argv: list[str] | None = None) -> int:
             "analyze-project",
             "producer-run",
             "produce-tech-house",
+            "producer-context",
+            "producer-supervise",
             "cross-project-validate",
             "import-project",
             "install",
@@ -171,6 +177,20 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--sample-root", default=None, help="produce-tech-house: authorized sample-library directory")
     parser.add_argument("--workspace", default=None, help="produce-tech-house: authorized output directory")
     parser.add_argument("--reference", default=None, help="produce-tech-house: optional read-only external comparison audio")
+    parser.add_argument("--brief-file", default=None, help="producer-context: typed ProducerBrief JSON")
+    parser.add_argument("--lucas-brief", action="store_true", help="producer-context: explicitly use Lucas's agreed direction")
+    parser.add_argument("--authorize-library-use", action="store_true", help="producer-context: explicitly permit musical use of the supplied sample root")
+    parser.add_argument("--reference-context", action="append", default=[], help="producer-context: existing ReferenceContext JSON (repeatable)")
+    parser.add_argument("--context-output", default=None, help="producer-context: output JSON path")
+    parser.add_argument("--producer-context", default=None, help="produce-tech-house: prepared complete-track context JSON")
+    parser.add_argument(
+        "--enable-midi-phrases", action="store_true",
+        help="produce-tech-house: opt in to experimental empty-slot MIDI phrases; Hermes QA pending",
+    )
+    parser.add_argument("--review-file", default=None, help="producer-supervise: human TrackSupervision JSON")
+    parser.add_argument("--producer-state-root", default=None, help="producer-supervise: existing ProducerStateStore directory")
+    parser.add_argument("--producer-session-id", default=None, help="producer-supervise: existing producer session ID")
+    parser.add_argument("--reviewed-als", default=None, help="producer-supervise: exact saved ALS evaluated by the human")
     parser.add_argument(
         "--allow-ui-save", action="store_true",
         help="produce-tech-house: explicitly allow one identity-verified Windows UI save/relaunch",
@@ -446,6 +466,21 @@ def main(argv: list[str] | None = None) -> int:
             workspace=args.workspace,
             reference=args.reference,
             allow_ui_save=args.allow_ui_save,
+            producer_context_file=args.producer_context,
+            enable_midi_phrases=args.enable_midi_phrases,
+        )
+    if args.command == "producer-context":
+        return _prepare_producer_context(
+            brief_file=args.brief_file, lucas_brief=args.lucas_brief,
+            reference_context_files=args.reference_context,
+            sample_index=args.sample_index, sample_root=args.sample_root,
+            output=args.context_output,
+            authorize_library_use=args.authorize_library_use,
+        )
+    if args.command == "producer-supervise":
+        return _record_producer_supervision(
+            review_file=args.review_file, state_root=args.producer_state_root,
+            session_id=args.producer_session_id, reviewed_als=args.reviewed_als,
         )
     if args.command == "cross-project-validate":
         return _cross_project_validate(evidence, logger)
@@ -2783,6 +2818,8 @@ def _produce_tech_house(
     sample_root: str | None, workspace: str | None,
     reference: str | None = None,
     allow_ui_save: bool = False,
+    producer_context_file: str | None = None,
+    enable_midi_phrases: bool = False,
 ) -> int:
     """New-project production; reject an incomplete goal before opening Live."""
     from uuid import uuid4
@@ -2802,6 +2839,20 @@ def _produce_tech_house(
             if prompt_file else " ".join(prompt_words)
         )
         goal = ProducerGoal.from_prompt(prompt)
+        production_context = None
+        if producer_context_file:
+            from copilot.producer.context import ProducerContext
+
+            production_context = ProducerContext.model_validate_json(
+                Path(producer_context_file).read_text(encoding="utf-8")
+            )
+            blockers = production_context.planning_blockers()
+            if blockers:
+                raise ValueError(f"PRODUCER_CONTEXT_BLOCKED:{','.join(blockers)}")
+            if reference:
+                raise ValueError("PRODUCER_REFERENCE_INPUT_AMBIGUOUS")
+            if not production_context.brief.internal_audio_capture_authorized:
+                raise ValueError("PRODUCER_NO_CAPTURE_DELIVERY_NOT_CERTIFIED")
         if not all((template, sample_index, sample_root, workspace)):
             raise ValueError("PRODUCER_TEMPLATE_LIBRARY_AND_WORKSPACE_REQUIRED")
         from copilot.importing.new_project_v1 import open_new_project, prepare_new_project
@@ -2831,6 +2882,8 @@ def _produce_tech_house(
             opened_project=opened,
             reference_audio=Path(reference).resolve(strict=True) if reference else None,
             allow_ui_save=allow_ui_save,
+            production_context=production_context,
+            enable_midi_phrases=enable_midi_phrases,
         )
         report["copy"] = copy
         report["opened"] = opened
@@ -2842,6 +2895,102 @@ def _produce_tech_house(
         run_dir.mkdir(parents=True, exist_ok=True)
         atomic_write(run_dir / "report.json", report)
         print(json.dumps(report, indent=2, ensure_ascii=True, default=str))
+
+
+def _prepare_producer_context(
+    *, brief_file: str | None, lucas_brief: bool,
+    reference_context_files: list[str], sample_index: str | None,
+    sample_root: str | None, output: str | None,
+    authorize_library_use: bool = False,
+) -> int:
+    from copilot.human_eval.store import atomic_write
+    from copilot.producer.context import ProducerBrief, lucas_producer_brief, prepare_producer_context
+    from copilot.sample_library.library_v1 import load_index
+    from copilot.schemas.lucas_integration import ReferenceContext
+
+    try:
+        if bool(brief_file) == lucas_brief:
+            raise ValueError("PRODUCER_ONE_BRIEF_SOURCE_REQUIRED")
+        if bool(sample_index) != bool(sample_root):
+            raise ValueError("PRODUCER_INDEX_AND_ROOT_REQUIRED_TOGETHER")
+        if not output or Path(output).suffix.lower() != ".json":
+            raise ValueError("PRODUCER_CONTEXT_JSON_OUTPUT_REQUIRED")
+        destination = Path(output).resolve()
+        inputs = [value for value in [brief_file, sample_index, *reference_context_files] if value]
+        if any(destination == Path(value).resolve() for value in inputs):
+            raise ValueError("PRODUCER_CONTEXT_OUTPUT_OVERWRITES_INPUT")
+        if destination.exists():
+            raise ValueError("PRODUCER_CONTEXT_OUTPUT_ALREADY_EXISTS")
+        brief = (
+            ProducerBrief.model_validate_json(Path(brief_file).read_text(encoding="utf-8"))
+            if brief_file else lucas_producer_brief()
+        )
+        if authorize_library_use:
+            if sample_root is None:
+                raise ValueError("PRODUCER_AUTHORIZED_LIBRARY_ROOT_REQUIRED")
+            brief = ProducerBrief.model_validate({
+                **brief.model_dump(mode="json"),
+                "authorized_library_root": str(Path(sample_root).resolve(strict=True)),
+            })
+        references = [
+            ReferenceContext.model_validate_json(Path(path).read_text(encoding="utf-8"))
+            for path in reference_context_files
+        ]
+        index = load_index(Path(sample_index)) if sample_index else None
+        if sample_index and index is None:
+            raise ValueError("PRODUCER_INDEX_UNAVAILABLE")
+        context = prepare_producer_context(
+            brief=brief, references=references, index=index,
+            authorized_root=Path(sample_root) if sample_root else None,
+        )
+        atomic_write(destination, context.model_dump(mode="json"))
+        blockers = context.planning_blockers()
+        print(json.dumps({
+            "status": "BLOCKED" if blockers else "PLANNING_READY",
+            "context_path": str(destination), "blockers": blockers,
+            "MUSICAL_WRITES": 0, "audio_processed": False, "model_called": False,
+            "project_delivered": False,
+        }, indent=2))
+        return 2 if blockers else 0
+    except (OSError, ValueError) as exc:
+        print(json.dumps({
+            "status": "BLOCKED", "reason": str(exc), "MUSICAL_WRITES": 0,
+        }, indent=2))
+        return 2
+
+
+def _record_producer_supervision(
+    *, review_file: str | None, state_root: str | None,
+    session_id: str | None, reviewed_als: str | None,
+) -> int:
+    from copilot.producer.state import ProducerStateStore
+    from copilot.producer.supervision import TrackSupervision, record_track_supervision
+    from copilot.studio.persistence import disk_evidence
+
+    try:
+        if not all((review_file, state_root, session_id, reviewed_als)):
+            raise ValueError("SUPERVISION_REVIEW_STATE_AND_ALS_REQUIRED")
+        review = TrackSupervision.model_validate_json(
+            Path(review_file).read_text(encoding="utf-8")
+        )
+        path = Path(reviewed_als)
+        disk = disk_evidence(path)
+        if path.suffix.lower() != ".als" or disk.get("sha256") != review.reviewed_als_sha256:
+            raise ValueError("SUPERVISION_ALS_DIGEST_MISMATCH")
+        store = ProducerStateStore(state_root)
+        state = store.load(session_id)
+        if state is None or state.session_id != session_id:
+            raise ValueError("SUPERVISION_PRODUCER_SESSION_NOT_FOUND")
+        store.save(record_track_supervision(state, review))
+        print(json.dumps({
+            "status": "HUMAN_REVIEW_RECORDED", "MUSICAL_WRITES": 0,
+            "human_retained_fraction": review.human_retained_fraction,
+            "technical_completion_certified": False,
+        }, indent=2))
+        return 0
+    except (OSError, ValueError) as exc:
+        print(json.dumps({"status": "BLOCKED", "reason": str(exc), "MUSICAL_WRITES": 0}, indent=2))
+        return 2
 
 
 def _doctor(evidence: Path, logger) -> int:

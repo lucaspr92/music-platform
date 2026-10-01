@@ -20,7 +20,7 @@ from copilot.audio.advanced_perception_v1 import run_advanced_perception
 from copilot.audio.music_analyzer import analyze_reference_music
 from copilot.daw.ableton_tcp import AbletonTcpAdapter
 from copilot.daw.state_tokens import attach_tokens
-from copilot.human_eval.store import now_iso
+from copilot.human_eval.store import atomic_write, now_iso
 from copilot.integration.lucas_core_v1 import (
     _single_action_plan,
     build_lucas_input,
@@ -35,6 +35,15 @@ from copilot.integration.mixing_mastering_v1 import capture_and_analyze_master
 from copilot.importing.working_copy_manager_v1 import is_copilot_working_copy
 from copilot.musicplan import build_duplicate_clip_to_arrangement_action
 from copilot.producer.goal import ProducerGoal
+from copilot.producer.context import ProducerContext
+from copilot.producer.arrangement_score import ArrangementScore, PhraseSlotBinding
+from copilot.musicplan.score_compiler import (
+    ScoreBinding, ScoreCompilation, compile_score_placements, score_binding_blocker,
+)
+from copilot.musicplan.score_material import (
+    PhraseMaterialCompilation, bind_verified_phrase_slots, phrase_material_blocker,
+    prepare_score_phrase_material,
+)
 from copilot.producer.state import ProducerPhase, ProducerState, ProducerStateStore
 from copilot.sample_library.library_v1 import (
     build_sample_set_context,
@@ -159,16 +168,17 @@ class LucasPlanningProviderAdapter:
     endpoint, and credentials while requesting the stable Lucas JSON object.
     """
 
-    def __init__(self, inner: Any) -> None:
+    def __init__(self, inner: Any, *, complete_track: bool = False) -> None:
         self.inner = inner
         self.identity = str(getattr(inner, "identity", type(inner).__name__))
         self.version = str(getattr(inner, "version", "unknown"))
         self.response_adapter = "lucas_producer_plan_schema_v1"
         self.last_raw = ""
+        self.complete_track = complete_track
 
     @staticmethod
-    def _schema() -> dict[str, Any]:
-        return {
+    def _schema(*, complete_track: bool = False) -> dict[str, Any]:
+        schema = {
             "type": "object",
             "properties": {
                 "selections": {"type": "object", "additionalProperties": {"type": "integer"}},
@@ -350,6 +360,12 @@ class LucasPlanningProviderAdapter:
             ],
             "additionalProperties": False,
         }
+        if complete_track:
+            score_schema = ArrangementScore.model_json_schema()
+            schema["$defs"] = score_schema.pop("$defs", {})
+            schema["properties"]["arrangement_score"] = score_schema
+            schema["required"].extend(["track_spec", "arrangement_score"])
+        return schema
 
     def reason(self, prompt: str, *, timeout_s: float = 30.0) -> str:
         model = str(getattr(self.inner, "_model", ""))
@@ -368,7 +384,7 @@ class LucasPlanningProviderAdapter:
                 "format": {
                     "type": "json_schema",
                     "name": "LucasProducerPlan",
-                    "schema": self._schema(),
+                    "schema": self._schema(complete_track=self.complete_track),
                     "strict": False,
                 }
             },
@@ -494,7 +510,14 @@ def _actualize_action(action: Any, current: Any) -> tuple[Any | None, str | None
     return actual, None
 
 
-def _execute_one(action: Any, *, daw: Any, persist_dir: Path) -> dict[str, Any]:
+def _execute_one(
+    action: Any, *, daw: Any, persist_dir: Path,
+    score_binding: ScoreBinding | None = None,
+    phrase_material: PhraseMaterialCompilation | None = None,
+    musical_score: ArrangementScore | None = None,
+    verified_phrase_clip_ids: dict[str, str] | None = None,
+    experimental_midi_track_ids: frozenset[str] = frozenset(),
+) -> dict[str, Any]:
     from copilot.daw.state_tokens import attach_tokens
     from copilot.runtime.production_compiler import ProductionCompiler
     from copilot.runtime.safe_write import build_safe_write_executor
@@ -504,6 +527,28 @@ def _execute_one(action: Any, *, daw: Any, persist_dir: Path) -> dict[str, Any]:
     # include_notes=False view can carry a different observed revision.
     current = daw.snapshot()
     attach_tokens(current)
+    if action.action_type is ProductionActionKind.CREATE_MIDI_PHRASE:
+        blocker = (
+            "MIDI_PHRASE_CONTEXT_REQUIRED"
+            if phrase_material is None or musical_score is None else
+            phrase_material_blocker(
+                phrase_material, score=musical_score, session=current,
+                verified_clip_ids=verified_phrase_clip_ids or {},
+            )
+        )
+        if blocker:
+            return {
+                "action_id": action.action_id, "action_type": _plan_action_name(action),
+                "status": "EXECUTION_DEFERRED", "reason": blocker,
+            }
+    if score_binding is not None:
+        blocker = score_binding_blocker(score_binding, current)
+        if blocker is not None:
+            return {
+                "action_id": action.action_id,
+                "action_type": _plan_action_name(action),
+                "status": "EXECUTION_DEFERRED", "reason": blocker,
+            }
     planned_name = str(action.target.ref.get("name") or "")
     planned_track = current.track_by_name(planned_name) if planned_name else None
     if action.action_type is ProductionActionKind.SAMPLE_LOAD and planned_track is not None:
@@ -530,18 +575,26 @@ def _execute_one(action: Any, *, daw: Any, persist_dir: Path) -> dict[str, Any]:
             "reason": reason,
         }
     single = _single_action_plan(actual, session=current, plan_id=f"alpha_{action.action_id}")
-    compiled = ProductionCompiler().compile(single, session=current)
-    if compiled.status != "COMPILED" or compiled.intent is None:
+    compiler = ProductionCompiler()
+    if action.action_type is ProductionActionKind.CREATE_MIDI_PHRASE:
+        compiler = ProductionCompiler(
+            experimental_midi_track_ids=experimental_midi_track_ids,
+            negotiated_capabilities=frozenset(getattr(daw, "capabilities", ())),
+        )
+    compiled = compiler.compile(single, session=current)
+    if compiled.status not in {"COMPILED", "COMPILED_EXPERIMENTAL"} or compiled.intent is None:
         return {
             "action_id": action.action_id,
             "action_type": _plan_action_name(action),
             "status": "EXECUTION_DEFERRED",
             "reason": "; ".join(compiled.reasons) or compiled.status,
         }
+    executor_args = {}
+    if action.action_type is ProductionActionKind.CREATE_MIDI_PHRASE:
+        executor_args["experimental_midi_track_ids"] = experimental_midi_track_ids
     executor = build_safe_write_executor(
-        daw,
-        journal_path=persist_dir / f"{action.action_id}_safe_write.jsonl",
-        persist_dir=persist_dir,
+        daw, journal_path=persist_dir / f"{action.action_id}_safe_write.jsonl",
+        persist_dir=persist_dir, **executor_args,
     )
     result = executor.run(compiled.intent)
     row = {
@@ -552,12 +605,22 @@ def _execute_one(action: Any, *, daw: Any, persist_dir: Path) -> dict[str, Any]:
     }
     if not result.ok:
         row["error"] = result.error or "SAFE_WRITE_FAILED"
+    if action.action_type is ProductionActionKind.SAMPLE_LOAD and result.ok:
+        loaded_id = compiled.intent.executions[0].expected_after.get("device_stable_id")
+        if loaded_id:
+            row["loaded_device_stable_id"] = loaded_id
+    if action.action_type is ProductionActionKind.CREATE_MIDI_PHRASE:
+        row["experimental"] = True
+        row["certification"] = "HERMES_VALIDATION_PENDING"
     return row
 
 
 def _arrangement_actions(
     plan: MusicPlan, metadata: dict[str, Any], daw: Any, *, strict: bool = False,
     missing: list[str] | None = None,
+    score_compilations: list[ScoreCompilation] | None = None,
+    verified_material_roles: set[str] | None = None,
+    verified_phrase_slots: list[PhraseSlotBinding] | None = None,
 ) -> list[Any]:
     sections = metadata.get("arrangement") or []
     if not sections:
@@ -566,6 +629,22 @@ def _arrangement_actions(
     cursor = 0.0
     session = daw.snapshot()
     attach_tokens(session)
+    if metadata.get("arrangement_score") is not None:
+        from copilot.producer.track_spec import TrackSpec
+
+        compiled = compile_score_placements(
+            score=ArrangementScore.model_validate(metadata["arrangement_score"]),
+            spec=TrackSpec.model_validate(metadata["track_spec"]),
+            sample_map=metadata["sample_map"], session=session,
+            capabilities=getattr(daw, "capabilities", None),
+            evidence_refs=list(plan.evidence_refs),
+            verified_material_roles=verified_material_roles or set(),
+            verified_phrase_slots=verified_phrase_slots,
+        )
+        if score_compilations is None:
+            raise ValueError("SCORE_COMPILATION_REPORT_REQUIRED")
+        score_compilations.append(compiled)
+        return compiled.actions
     for section in sections:
         if isinstance(section, dict):
             section_name = str(section.get("name") or "SECTION")
@@ -632,6 +711,14 @@ def _execute_midi_pattern(
         "status": "VERIFIED" if result.ok else "FAILED",
         "error": None if result.ok else result.error or "SAFE_WRITE_FAILED",
         "readbacks": [item.model_dump(mode="json") for item in result.readbacks],
+        "created_track_stable_id": next(
+            (
+                item.observed for item in result.readbacks
+                if item.action_id == create.action_id and item.parameter == "session.track"
+                and item.matched and isinstance(item.observed, str)
+            ),
+            None,
+        ) if result.ok else None,
     }
 
 
@@ -950,6 +1037,8 @@ def run_alpha(
     opened_project: dict[str, Any] | None = None,
     reference_audio: Path | None = None,
     allow_ui_save: bool = False,
+    production_context: ProducerContext | None = None,
+    enable_midi_phrases: bool = False,
 ) -> dict[str, Any]:
     """Run a bounded pass; goal mode never uses a deterministic fallback."""
     evidence.mkdir(parents=True, exist_ok=True)
@@ -961,10 +1050,24 @@ def run_alpha(
         "MUSICAL_WRITES": 0,
         "strategy_provenance": REAL_LUCAS,
         "lucas_owned_files_modified": 0,
+        "experimental_midi_phrases_enabled": enable_midi_phrases,
     }
     if goal is not None:
         report["goal"] = goal.model_dump(mode="json")
         report["status"] = "BLOCKED"
+    if production_context is not None:
+        report["production_context"] = production_context.model_dump(mode="json")
+        blockers = production_context.planning_blockers()
+        if goal is None:
+            blockers.append("PRODUCER_COMPLETE_TRACK_GOAL_REQUIRED")
+        if reference_audio is not None:
+            blockers.append("PRODUCER_REFERENCE_INPUT_AMBIGUOUS")
+        if not production_context.brief.internal_audio_capture_authorized:
+            blockers.append("PRODUCER_NO_CAPTURE_DELIVERY_NOT_CERTIFIED")
+        if blockers:
+            report.update(status="BLOCKED", reason=";".join(blockers))
+            atomic_write(artifact_path, report)
+            return report
     producer_state: ProducerState | None = None
     producer_state_store: ProducerStateStore | None = None
     from copilot.importing.new_project_v1 import UiSaveRunBudget
@@ -1060,7 +1163,11 @@ def run_alpha(
             index_counts = {"indexed": len(index.assets), "source": str(authorized_library_root)}
         else:
             index, index_counts = _build_sample_index(project_path, evidence)
-        if goal is None:
+        if production_context is not None:
+            pack = None
+            reference_path = None
+            reference = production_context.references[0]
+        elif goal is None:
             reference_path = Path(os.environ["COPILOT_ALPHA_REFERENCE"]) if os.environ.get("COPILOT_ALPHA_REFERENCE") else discover_reference(evidence, project_path=project_path)
             pack = analyze_reference_music(
                 reference_path,
@@ -1100,7 +1207,7 @@ def run_alpha(
             SampleRole.BASS, SampleRole.VOCAL, SampleRole.SYNTH, SampleRole.FX,
             SampleRole.IMPACT, SampleRole.TEXTURE,
         ]
-        samples = build_sample_set_context(
+        samples = production_context.samples if production_context is not None else build_sample_set_context(
             index, task_id="autonomous-producer-alpha-v1", wanted_roles=roles,
             per_role=3, bpm=float(session.transport.tempo),
         )
@@ -1115,12 +1222,14 @@ def run_alpha(
             reference=reference,
             samples=samples,
             project=build_project_context(session),
-            style=StyleContext(),
+            style=production_context.brief.style_context() if production_context else StyleContext(),
         )
         provider = configured_http_provider()
         if provider is None:
             raise RealLucasRequired("REAL_LUCAS_PROVIDER_UNAVAILABLE")
-        planner_provider = LucasPlanningProviderAdapter(provider)
+        planner_provider = LucasPlanningProviderAdapter(
+            provider, complete_track=production_context is not None,
+        )
         def strict_planner(**kwargs):
             from copilot.musicplan.astra_plan import build_plan_from_prompt
 
@@ -1137,6 +1246,7 @@ def run_alpha(
             provider=planner_provider,
             plan_id="autonomous_producer_alpha_v1",
             planner=strict_planner if goal else None,
+            production_context=production_context,
         )
         report["lucas"] = {
             "entrypoint": "build_plan_from_prompt",
@@ -1149,6 +1259,8 @@ def run_alpha(
         if not planner_run.planner_metadata.get("astra_used"):
             report["lucas"]["provider_raw_response"] = planner_provider.last_raw
             raise RealLucasRequired("LUCAS_PLANNER_FELL_BACK_TO_DETERMINISTIC_RECIPE")
+        if production_context is not None:
+            report["production_context"] = planner_run.planner_metadata["production_context"]
         plan = planner_run.plan
         if goal is not None:
             from copilot.producer.track_spec import TrackSpec
@@ -1167,12 +1279,15 @@ def run_alpha(
             report["sample_comparisons"] = planner_run.planner_metadata["sample_comparisons"]
             producer_state = producer_state.model_copy(update={
                 "decisions": {
+                    **producer_state.decisions,
                     "track_spec": report["track_spec"],
                     "sample_selections": planner_run.planner_metadata["sample_map"],
                     "selection_reasons": planner_run.planner_metadata["selection_reasons"],
                     "rejected_candidates": planner_run.planner_metadata["rejected_candidates"],
                     "mix_decisions": report["mix_decisions"],
                     "producer_criteria": report["producer_criteria"],
+                    "production_context": report.get("production_context"),
+                    "arrangement_score": planner_run.planner_metadata.get("arrangement_score"),
                 },
             })
         persist_producer_state(
@@ -1191,16 +1306,27 @@ def run_alpha(
             "reference": {
                 "path": str(reference_path) if reference_path else None,
                 "identity": reference.identity,
-                "rights_state": "UNKNOWN_EXTERNAL_RECORDING" if pack else "NO_REFERENCE",
+                "rights_state": (
+                    "PROVIDED_READ_ONLY_CONTEXT" if production_context
+                    else "UNKNOWN_EXTERNAL_RECORDING" if pack else "NO_REFERENCE"
+                ),
                 "role": (
-                    "aggregate_energy_groove_mix_comparison_only" if goal and pack
+                    "provided_reference_evidence_only" if production_context
+                    else "aggregate_energy_groove_mix_comparison_only" if goal and pack
                     else "groove_lowend_texture_analysis_only" if pack else "NONE"
                 ),
                 "pack": pack.model_dump(mode="json") if pack else None,
             },
-            "sample_set_context": samples.model_dump(mode="json"),
+            "sample_set_context": (
+                report["production_context"]["samples"] if production_context
+                else samples.model_dump(mode="json")
+            ),
             "sample_index": index_counts,
-            "style_context": StyleContext().model_dump(mode="json"),
+            "style_context": context.style.model_dump(mode="json"),
+            "reference_contexts": (
+                [ref.model_dump(mode="json") for ref in production_context.references]
+                if production_context else [reference.model_dump(mode="json")]
+            ),
             "lucas": {
                 "entrypoint": "build_plan_from_prompt",
                 "strategy_provenance": REAL_LUCAS,
@@ -1249,18 +1375,158 @@ def run_alpha(
                 report["MUSICAL_WRITES"] += 1
 
         missing_sources: list[str] = []
+        score_compilations: list[ScoreCompilation] = []
+        material_action_roles = {
+            action.action_id: str(action.target.ref.get("name") or "")
+            for action in plan.actions if action.action_type is ProductionActionKind.SAMPLE_LOAD
+        }
+        verified_material_roles = {
+            material_action_roles[row["action_id"]]
+            for row in dispositions
+            if row["status"] == "VERIFIED" and row["action_id"] in material_action_roles
+        }
+        verified_material_devices = {
+            material_action_roles[row["action_id"]]: row["loaded_device_stable_id"]
+            for row in dispositions if row["status"] == "VERIFIED"
+            and row["action_id"] in material_action_roles and row.get("loaded_device_stable_id")
+        }
+        verified_phrase_slots = None
+        if enable_midi_phrases and planner_run.planner_metadata.get("arrangement_score") is not None:
+            if any(row["status"] == "FAILED" for row in dispositions):
+                report.update(status="DRAFT", reason="INITIAL_MATERIAL_FAILED_BEFORE_MIDI_PHRASES")
+                persist_producer_state(producer_state.record(
+                    "MIDI_PHRASES_NOT_ATTEMPTED", phase=ProducerPhase.DRAFT,
+                    detail=report["reason"],
+                ))
+                return report
+            score = ArrangementScore.model_validate(planner_run.planner_metadata["arrangement_score"])
+            owned_midi_ids = frozenset(
+                row["created_track_stable_id"] for row in dispositions
+                if row["status"] == "VERIFIED" and row.get("created_track_stable_id")
+            )
+            material_session = daw.snapshot()
+            attach_tokens(material_session)
+            phrase_material = prepare_score_phrase_material(
+                score=score, spec=spec, sample_map=planner_run.planner_metadata["sample_map"],
+                session=material_session, owned_midi_track_ids=owned_midi_ids,
+                verified_material_roles=verified_material_roles,
+                verified_material_devices=verified_material_devices,
+                capabilities=frozenset(getattr(daw, "capabilities", ())), enabled=True,
+            )
+            report["phrase_material"] = phrase_material.model_dump(mode="json")
+            producer_state = producer_state.model_copy(update={"observations": {
+                **producer_state.observations, "phrase_material": report["phrase_material"],
+            }})
+            persist_producer_state(producer_state.record(
+                "EXPERIMENTAL_MIDI_PHRASES_PLANNED", phase=ProducerPhase.EXECUTING,
+                payload={"new_phrase_count": len(phrase_material.actions)},
+            ))
+            dispositions.extend({
+                **deferred.model_dump(mode="json"),
+                "action_id": f"phrase:{deferred.event_id}",
+                "action_type": "CREATE_MIDI_PHRASE",
+                "source": "SCORE_PHRASE_MATERIAL",
+            } for deferred in phrase_material.deferred)
+            verified_clip_ids: dict[str, str] = {}
+            for action in phrase_material.actions:
+                row = _execute_one(
+                    action, daw=daw, persist_dir=persist_dir,
+                    phrase_material=phrase_material, musical_score=score,
+                    verified_phrase_clip_ids=verified_clip_ids,
+                    experimental_midi_track_ids=owned_midi_ids,
+                )
+                row["source"] = "SCORE_PHRASE_MATERIAL"
+                dispositions.append(row)
+                if row["status"] in {"VERIFIED", "FAILED"}:
+                    report["MUSICAL_WRITES"] += 1
+                if row["status"] == "FAILED":
+                    report.update(status="DRAFT", reason=row.get("error"))
+                    persist_producer_state(producer_state.record(
+                        "EXPERIMENTAL_MIDI_PHRASE_FAILED", phase=ProducerPhase.DRAFT,
+                        detail=report["reason"] or "SAFE_WRITE_FAILED",
+                    ))
+                    return report
+                if row["status"] == "VERIFIED":
+                    matching = [
+                        item["observed"]["stable_id"] for item in row["readbacks"]
+                        if item["parameter"] == "clip.midi_phrase" and item["matched"]
+                        and isinstance(item["observed"], dict) and item["observed"].get("stable_id")
+                    ]
+                    if len(matching) != 1:
+                        raise RuntimeError("MIDI_PHRASE_VERIFIED_READBACK_MISSING")
+                    verified_clip_ids[action.action_id] = matching[0]
+            phrase_session = daw.snapshot()
+            attach_tokens(phrase_session)
+            verified_phrase_slots = bind_verified_phrase_slots(
+                phrase_material, score=score, sample_map=planner_run.planner_metadata["sample_map"],
+                session=phrase_session, verified_clip_ids=verified_clip_ids,
+            )
+            report["verified_phrase_slots"] = [
+                binding.model_dump(mode="json") for binding in verified_phrase_slots
+            ]
+            producer_state = producer_state.model_copy(update={"observations": {
+                **producer_state.observations,
+                "verified_phrase_slots": report["verified_phrase_slots"],
+            }})
+            persist_producer_state(producer_state.record(
+                "MIDI_PHRASE_READBACKS_OBSERVED", phase=ProducerPhase.EXECUTING,
+                payload={"verified_phrase_count": len(verified_phrase_slots)},
+            ))
         arrangement_actions = _arrangement_actions(
             plan, planner_run.planner_metadata, daw, strict=goal is not None,
             missing=missing_sources,
+            score_compilations=score_compilations,
+            verified_material_roles=verified_material_roles,
+            verified_phrase_slots=verified_phrase_slots,
         )
+        score_compilation = score_compilations[0] if score_compilations else None
+        binding_by_action = {
+            binding.action_id: binding
+            for binding in (score_compilation.bindings if score_compilation else [])
+        }
+        if score_compilation is not None:
+            report["arrangement_score_compilation"] = {
+                **score_compilation.model_dump(mode="json"), "status": score_compilation.status,
+            }
+            producer_state = producer_state.model_copy(update={
+                "observations": {
+                    **producer_state.observations,
+                    "arrangement_score_compilation": report["arrangement_score_compilation"],
+                },
+            })
+            persist_producer_state(producer_state.record(
+                "ARRANGEMENT_SCORE_BOUND",
+                phase=ProducerPhase.EXECUTING,
+                payload={
+                    "placement_count": len(score_compilation.bindings),
+                    "deferred_count": len(score_compilation.deferred),
+                },
+            ))
+            dispositions.extend({
+                **deferred.model_dump(mode="json"),
+                "action_id": f"score:{deferred.event_id}",
+                "action_type": "ARRANGEMENT_SCORE",
+                "source": "REAL_LUCAS_ARRANGEMENT_SCORE",
+            } for deferred in score_compilation.deferred)
         arrangement_rows: list[dict[str, Any]] = []
         for action in arrangement_actions:
-            row = _execute_one(action, daw=daw, persist_dir=persist_dir)
+            binding = binding_by_action.get(action.action_id)
+            if binding is not None:
+                row = _execute_one(
+                    action, daw=daw, persist_dir=persist_dir, score_binding=binding,
+                )
+            else:
+                row = _execute_one(action, daw=daw, persist_dir=persist_dir)
             row["source"] = "REAL_LUCAS_ARRANGEMENT"
+            if binding is not None:
+                row["score_binding"] = binding.model_dump(mode="json")
             dispositions.append(row)
             arrangement_rows.append({
-                "section": action.reason.split(" arrangement ", 1)[-1].split(" (", 1)[0],
-                "track": str(action.target.ref.get("name") or ""),
+                "section": (
+                    binding.section if binding else
+                    action.reason.split(" arrangement ", 1)[-1].split(" (", 1)[0]
+                ),
+                "track": binding.role if binding else str(action.target.ref.get("name") or ""),
                 "status": row["status"],
             })
             if row["status"] in {"VERIFIED", "FAILED"}:
@@ -1274,10 +1540,17 @@ def run_alpha(
                 "source": "REAL_LUCAS_ARRANGEMENT",
             })
         if goal is not None:
-            phrase_gaps = _uncertified_phrase_variations(spec, plan)
+            phrase_gaps = (
+                _uncertified_phrase_variations(spec, plan)
+                if score_compilation is None else []
+            )
             dispositions.extend(phrase_gaps)
             report["phrase_variations"] = {
-                "status": "DRAFT" if phrase_gaps else "NO_MIDI_VARIATION_CLAIMED",
+                "status": (
+                    "DRAFT" if phrase_gaps else
+                    "CONCRETE_SCORE_PLANNED" if score_compilation is not None else
+                    "NO_MIDI_VARIATION_CLAIMED"
+                ),
                 "unverified": phrase_gaps,
             }
         report["execution"] = {
@@ -1704,7 +1977,13 @@ def run_alpha(
                 spec,
                 tracks={track.name: track.index for track in final_session.tracks},
                 clips=daw.get_arrangement_clips().get("clips", []),
+                score_bindings=score_compilation.bindings if score_compilation else None,
             )
+            if score_compilation is not None and (
+                final_session.transport.signature_numerator,
+                final_session.transport.signature_denominator,
+            ) != (spec.meter_numerator, spec.meter_denominator):
+                geometry.append("SCORE_LIVE_METER_MISMATCH")
             report["arrangement_geometry"] = {
                 "status": "VERIFIED" if not geometry else "BLOCKED",
                 "reasons": geometry,

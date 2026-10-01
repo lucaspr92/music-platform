@@ -86,6 +86,8 @@ class TrackState(BaseModel):
     sends: list[SendState] = Field(default_factory=list)
     grouped: bool = False
     foldable: bool = False
+    clip_slot_count: int | None = Field(default=None, ge=0)
+    empty_clip_slots: list[int] | None = None
 
 
 class SessionState(BaseModel):

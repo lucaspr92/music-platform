@@ -21,9 +21,11 @@ dependencies = [
 dev = ["pytest>=8.0"]
 perception = ["torch>=2.0", "transformers>=5.0"]
 soniq = ["websocket-client>=1.9"]
+mcp = ["mcp>=2.2,<3"]
 
 [project.scripts]
 copilot = "copilot.cli:main"
+copilot-mcp = "copilot.mcp.server:main"
 
 [tool.setuptools.packages.find]
 where = ["src"]
