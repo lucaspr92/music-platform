@@ -35,15 +35,16 @@ from copilot.musicplan import (
     build_set_track_volume_action,
 )
 from copilot.musicplan.full_groove_lab_v1 import _same_notes
+from copilot.platform.runtime_paths import ableton_core_library, runtime_root
 from copilot.producer import tech_house_kit_v1 as kit
 from copilot.runtime.production_compiler import ProductionCompiler
 from copilot.runtime.safe_write import build_safe_write_executor
 from copilot.schemas.musicplan import DiagnosisBinding, MusicPlan, PlanIntentClass, PlanStatus, VolumeOperation
 from copilot.schemas.session import MidiNote, TrackState
 
-DEFAULT_OUT = Path(r"D:\music-platform-runtime\production-kit\tech-house-v1")
-DEFAULT_TEMPLATE = Path(r"D:\music-platform-runtime\templates\empty-126bpm\empty-126bpm.als")
-DEFAULT_CORE_LIBRARY = Path(r"C:\ProgramData\Ableton\Live 12 Trial\Resources\Core Library")
+DEFAULT_OUT = runtime_root() / "production-kit" / "tech-house-v1"
+DEFAULT_TEMPLATE = runtime_root() / "templates" / "empty-126bpm" / "empty-126bpm.als"
+DEFAULT_CORE_LIBRARY = ableton_core_library()
 WAV_NAME = "tech_house_production_kit_v1.wav"
 SILENCE_RMS = 1e-5
 CLIP_PEAK = 1.0

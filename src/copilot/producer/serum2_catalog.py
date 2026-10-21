@@ -12,6 +12,7 @@ from typing import Any
 
 from pydantic import BaseModel, Field
 
+from copilot.platform.plugin_paths import WINDOWS_VST2_DIRECTORIES, WINDOWS_VST3_DIRECTORY
 from copilot.producer.preset_catalog import PresetCandidate, PresetCatalog
 
 
@@ -53,10 +54,10 @@ def default_plugin_candidates() -> list[tuple[str, str, Path]]:
         ('Serum 2', 'VST3', home / 'Library/Audio/Plug-Ins/VST3/Serum2.vst3'),
         ('Serum 2', 'AU', home / 'Library/Audio/Plug-Ins/Components/Serum2.component'),
         ('Serum 2', 'VST', home / 'Library/Audio/Plug-Ins/VST/Serum.vst'),
-        ('Serum 2', 'VST3', Path(r'C:/Program Files/Common Files/VST3/Serum2.vst3')),
-        ('Serum 2', 'VST3', Path(r'C:/Program Files/Common Files/VST3/Serum 2.vst3')),
-        ('Serum 2', 'VST', Path(r'C:/Program Files/VstPlugins/Serum.dll')),
-        ('Serum 2', 'VST', Path(r'C:/Program Files/Steinberg/VstPlugins/Serum.dll')),
+        ('Serum 2', 'VST3', WINDOWS_VST3_DIRECTORY / 'Serum2.vst3'),
+        ('Serum 2', 'VST3', WINDOWS_VST3_DIRECTORY / 'Serum 2.vst3'),
+        ('Serum 2', 'VST', WINDOWS_VST2_DIRECTORIES[0] / 'Serum.dll'),
+        ('Serum 2', 'VST', WINDOWS_VST2_DIRECTORIES[1] / 'Serum.dll'),
         ('Serum 2', 'VST', localappdata / 'Programs/Xfer/Serum/Serum.dll'),
         ('Serum', 'VST3', Path('/Library/Audio/Plug-Ins/VST3/Serum.vst3')),
         ('Serum', 'AU', Path('/Library/Audio/Plug-Ins/Components/Serum.component')),

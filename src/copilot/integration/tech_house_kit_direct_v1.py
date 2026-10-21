@@ -15,12 +15,13 @@ from copilot.audio.batch_capture import capture_parallel_pass
 from copilot.audio.live3r_trust import _recorders
 from copilot.audio.live_capture import ensure_master_tap
 from copilot.core_v2 import AbletonBatch, DirectAbletonExecutor, DirectAbletonSession, TrackBatch
+from copilot.platform.runtime_paths import ableton_core_library, runtime_root
 from copilot.producer import tech_house_kit_v1 as kit
 from copilot.schemas.observation import SignalPoint
 from copilot.schemas.session import MidiNote
 
 
-OUT = Path(r"D:\music-platform-runtime\production-kit\tech-house-direct-v1")
+OUT = runtime_root() / "production-kit" / "tech-house-direct-v1"
 WAV = OUT / "audio" / "tech_house_production_kit_v1_direct.wav"
 VOLUMES = {"Kick": .75, "Clap": .66, "Closed Hat": .55, "Open Hat": .55,
            "Perc": .52, "Bass": .70, "Stab": .58}
@@ -79,7 +80,7 @@ def run() -> dict:
     for folder in (OUT / "audio", OUT / "plan", OUT / "evidence", OUT / "report"):
         folder.mkdir(parents=True, exist_ok=True)
     started = time.perf_counter()
-    definition = kit.kit_definition(Path(r"C:\ProgramData\Ableton\Live 12 Trial\Resources\Core Library"))
+    definition = kit.kit_definition(ableton_core_library())
     plan = kit.groove_plan()
     (OUT / "plan" / "kit_definition.json").write_text(json.dumps(definition, indent=2), encoding="utf-8")
     (OUT / "plan" / "groove_plan.json").write_text(json.dumps(plan, indent=2), encoding="utf-8")

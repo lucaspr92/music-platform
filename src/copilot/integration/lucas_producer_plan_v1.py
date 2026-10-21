@@ -9,12 +9,13 @@ import time
 
 from pydantic import ValidationError
 
+from copilot.platform.runtime_paths import runtime_root
 from copilot.producer.producer_plan_v1 import INTENT, ProducerPlanV1, render_producer_plan_v1
 from copilot.producer import tech_house_kit_v2 as palette
 from copilot.reasoning.provider import configured_http_provider
 
 
-RUNTIME = Path(r"D:\music-platform-runtime")
+RUNTIME = runtime_root()
 OUT = RUNTIME / "production-kit" / "lucas-producer-plan-v1"
 A_WAV = RUNTIME / "production-kit" / "tech-house-direct-v1" / "audio" / "tech_house_production_kit_v1_direct.wav"
 B_WAV = RUNTIME / "production-kit" / "tech-house-direct-v2" / "audio" / "tech_house_production_kit_v2.wav"

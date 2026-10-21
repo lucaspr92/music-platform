@@ -11,11 +11,12 @@ import time
 from copilot.core_v2.direct import AbletonBatch, DirectAbletonExecutor, DirectAbletonSession, TrackBatch
 from copilot.daw.detect import detect_ableton
 from copilot.integration.tech_house_kit_direct_v1 import _capture, metrics as wav_metrics, VOLUMES
+from copilot.platform.runtime_paths import runtime_root
 from copilot.producer import tech_house_kit_v1 as v1, tech_house_kit_v2 as v2
 from copilot.schemas.session import MidiNote
 
 
-RUNTIME = Path(r"D:\music-platform-runtime")
+RUNTIME = runtime_root()
 A_DIR = RUNTIME / "production-kit" / "tech-house-direct-v1"
 B_DIR = RUNTIME / "production-kit" / "tech-house-direct-v2"
 A_WAV = A_DIR / "audio" / "tech_house_production_kit_v1_direct.wav"

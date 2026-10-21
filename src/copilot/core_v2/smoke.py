@@ -14,11 +14,12 @@ from copilot.audio.batch_capture import capture_parallel_pass
 from copilot.audio.live3r_trust import _recorders
 from copilot.audio.live_capture import ensure_master_tap
 from copilot.core_v2.direct import AbletonBatch, DirectAbletonExecutor, DirectAbletonSession, TrackBatch
+from copilot.platform.runtime_paths import runtime_root
 from copilot.schemas.observation import SignalPoint
 from copilot.schemas.session import MidiNote
 
 
-OUT = Path(r"D:\music-platform-runtime\core-v2-smoke")
+OUT = runtime_root() / "core-v2-smoke"
 WAV = OUT / "fast_direct_executor_v1.wav"
 
 
