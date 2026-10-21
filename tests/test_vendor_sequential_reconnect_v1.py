@@ -61,6 +61,12 @@ def test_vendor_bridge_serves_sequential_clients_without_sleep(monkeypatch) -> N
     bridge._threads_lock = threading.Lock()
     bridge.server_thread = None
     bridge.running = False
+    # __init__ is bypassed, so supply the transport state the client handler
+    # touches in its finally block; without it the handler thread dies on
+    # cleanup and the one-client-at-a-time contract is never really exercised.
+    bridge._transport_event_lock = threading.RLock()
+    bridge._transport_subscribers = {}
+    bridge._transport_event_capable = False
     bridge.start_server()
 
     def empty_connectivity_probe() -> None:
