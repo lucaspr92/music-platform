@@ -697,6 +697,31 @@ def execute_lucas_plan_through_core(
     }
 
 
+def _compact_name(value: str) -> str:
+    return "".join(ch for ch in str(value).casefold() if ch.isalnum())
+
+
+def _resolve_device_on_track(track, requested_name: str):
+    want_norm = " ".join(str(requested_name or "").casefold().split())
+    want_compact = _compact_name(requested_name or "")
+    if not track or not want_norm:
+        return None
+    for d in track.devices:
+        if " ".join(str(d.name or "").casefold().split()) == want_norm:
+            return d
+    for d in track.devices:
+        d_norm = " ".join(str(d.name or "").casefold().split())
+        d_compact = _compact_name(d.name or "")
+        if want_compact and (want_compact == d_compact or want_compact in d_compact or d_compact in want_compact):
+            return d
+    return None
+
+
+def _serum_like(device_name: str, class_name: str = "") -> bool:
+    value = f"{device_name} {class_name}".casefold()
+    return "serum" in value
+
+
 def execute_lucas_patch_contracts_through_core(
     *,
     contracts: list[dict[str, Any]],
@@ -733,7 +758,7 @@ def execute_lucas_patch_contracts_through_core(
         current = daw.snapshot()
         attach_tokens(current)
         track = current.track_by_name(track_name)
-        device = next((d for d in track.devices if d.name.lower() == device_name.lower()), None) if track else None
+        device = _resolve_device_on_track(track, device_name) if track else None
         if track is None or device is None:
             deferred.append({"index": cidx, "status": "EXECUTION_DEFERRED", "reason": "TARGET_NOT_FOUND"})
             continue
@@ -807,6 +832,41 @@ def execute_lucas_patch_contracts_through_core(
             })
             continue
         constraints = dict(contract.get("constraints") or {})
+        if len(device.parameters) <= 1 and _serum_like(device.name, device.class_name):
+            try:
+                from copilot.producer.soniq_surface import apply_patch_contract_auto_mode
+
+                auto_report = apply_patch_contract_auto_mode(
+                    daw,
+                    session=current,
+                    contract={
+                        "track": track.name,
+                        "device": device.name,
+                        "writes": list(contract.get("writes") or []),
+                        "constraints": constraints,
+                    },
+                    throttle_ms=int(contract.get("throttle_ms", 40)),
+                )
+            except Exception as exc:  # noqa: BLE001
+                auto_report = {"ok": False, "error": f"auto_mode_exception:{exc}"}
+
+            if auto_report.get("ok"):
+                accepted.append({
+                    "index": cidx,
+                    "status": "VERIFIED",
+                    "action_type": "SET_DEVICE_PARAMETER",
+                    "routing_mode": auto_report.get("routing_mode"),
+                    "surface_backend": "soniq_auto_mode",
+                })
+            else:
+                deferred.append({
+                    "index": cidx,
+                    "status": "EXECUTION_DEFERRED",
+                    "reason": f"SURFACE_BACKEND_UNAVAILABLE:{auto_report.get('error') or auto_report.get('routing_mode') or 'unknown'}",
+                    "surface_backend": "soniq_auto_mode",
+                })
+            continue
+
         max_delta = float(constraints.get("max_delta_norm", 0.35))
         max_writes = max(1, min(16, int(constraints.get("max_writes", 8))))
         forbid_toggle = bool(constraints.get("forbid_device_on_toggle", True))

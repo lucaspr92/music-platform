@@ -68,3 +68,38 @@ def test_load_device_fallbacks_to_plugins_browse(monkeypatch):
     assert out["params"]["uri"] == "query:Plugins#Serum2"
     assert ["plugins"] in calls["browse"]
     assert ["plugins", "Xfer"] in calls["browse"]
+
+
+
+def test_load_device_prefers_serum2_vst3_when_query_is_serum2(monkeypatch):
+    adapter = AbletonTcpAdapter()
+
+    def fake_search(query: str, category: str = "all"):
+        return {"results": []}
+
+    def fake_browse(path: list[str]):
+        if path == ["plugins"]:
+            return {"items": [{"name": "VST", "is_folder": True, "is_loadable": False, "is_device": False, "uri": None}, {"name": "VST3", "is_folder": True, "is_loadable": False, "is_device": False, "uri": None}]}
+        if path == ["plugins", "VST"]:
+            return {"items": [{"name": "Serum", "is_folder": False, "is_loadable": True, "is_device": True, "uri": "query:Plugins#VST:Local:Serum"}]}
+        if path == ["plugins", "VST3"]:
+            return {"items": [{"name": "Xfer Records", "is_folder": True, "is_loadable": False, "is_device": False, "uri": None}]}
+        if path == ["plugins", "VST3", "Xfer Records"]:
+            return {"items": [{"name": "Serum 2", "is_folder": False, "is_loadable": True, "is_device": True, "uri": "query:Plugins#VST3:Xfer%20Records:Serum%202"}]}
+        return {"items": []}
+
+    captured = {}
+
+    def fake_command(command_type: str, params=None, side_effect: bool = False):
+        captured["command_type"] = command_type
+        captured["params"] = params
+        return {"ok": True, "params": params}
+
+    monkeypatch.setattr(adapter, "search_browser", fake_search)
+    monkeypatch.setattr(adapter, "browse_path", fake_browse)
+    monkeypatch.setattr(adapter, "_command", fake_command)
+
+    out = adapter.load_instrument_or_effect(3, "Serum2")
+
+    assert out["params"]["uri"] == "query:Plugins#VST3:Xfer%20Records:Serum%202"
+    assert captured["command_type"] == "load_instrument_or_effect"

@@ -51,6 +51,10 @@ DEFAULT_HOST = os.environ.get("ABLETON_MCP_HOST", "127.0.0.1")
 DEFAULT_PORT = int(os.environ.get("ABLETON_MCP_PORT", "9877"))
 
 
+def _compact_device_name(value: str) -> str:
+    return "".join(ch for ch in str(value).casefold() if ch.isalnum())
+
+
 def _is_transport_failure(exc: BaseException) -> bool:
     message = str(exc)
     return any(
@@ -1028,7 +1032,8 @@ class AbletonTcpAdapter(DawAdapter):
         we probe additional categories and keep deterministic ranking.
         """
         normalized = " ".join(name.casefold().split())
-        best: tuple[int, int, str] | None = None
+        compact = _compact_device_name(name)
+        best: tuple[int, int, int, int, str] | None = None
         for category in ("audio_effects", "midi_effects", "instruments", "drums", "sounds", "all"):
             try:
                 sr = self.search_browser(name, category)
@@ -1042,19 +1047,23 @@ class AbletonTcpAdapter(DawAdapter):
                 if not uri:
                     continue
                 row_name = " ".join(str(row.get("name") or "").casefold().split())
-                exact = 1 if row_name == normalized else 0
-                contains = 1 if (normalized in row_name or row_name in normalized) else 0
-                score = (exact, contains, uri)
+                row_compact = _compact_device_name(row_name)
+                exact_compact = 1 if row_compact == compact else 0
+                exact_space = 1 if row_name == normalized else 0
+                contains = 1 if (compact and (compact in row_compact or row_compact in compact)) else 0
+                prefer_vst3 = 1 if "vst3" in uri.casefold() else 0
+                score = (exact_compact, exact_space, contains, prefer_vst3, uri)
                 if best is None or score > best:
                     best = score
-        return None if best is None else best[2]
+        return None if best is None else best[4]
 
     def _resolve_device_uri_by_plugins_browse(self, name: str) -> str | None:
         """Fallback plugin resolver via browse_path(['plugins']) tree walk."""
         normalized = " ".join(name.casefold().split())
+        compact = _compact_device_name(name)
         stack: list[list[str]] = [["plugins"]]
         visited: set[tuple[str, ...]] = set()
-        matches: list[tuple[int, str]] = []
+        matches: list[tuple[int, int, int, int, str]] = []
         max_depth = 6
         max_nodes = 3000
         scanned = 0
@@ -1073,18 +1082,22 @@ class AbletonTcpAdapter(DawAdapter):
                 scanned += 1
                 item_name = str(item.get("name") or "")
                 item_norm = " ".join(item_name.casefold().split())
+                item_compact = _compact_device_name(item_norm)
                 is_folder = bool(item.get("is_folder"))
                 is_loadable = bool(item.get("is_loadable"))
                 uri = str(item.get("uri") or "")
-                if uri and is_loadable and (normalized == item_norm or normalized in item_norm or item_norm in normalized):
-                    exact = 2 if item_norm == normalized else 1
-                    matches.append((exact, uri))
+                if uri and is_loadable and compact and (compact in item_compact or item_compact in compact):
+                    exact_compact = 2 if item_compact == compact else 1
+                    exact_space = 1 if item_norm == normalized else 0
+                    prefer_vst3 = 1 if "vst3" in uri.casefold() else 0
+                    prefer_serum2 = 1 if "serum%202" in uri.casefold() or "serum 2" in item_norm else 0
+                    matches.append((exact_compact, exact_space, prefer_serum2, prefer_vst3, uri))
                 if is_folder and len(path) < max_depth and item_name:
                     stack.append(path + [item_name])
         if not matches:
             return None
-        matches.sort(key=lambda row: (row[0], row[1]), reverse=True)
-        return matches[0][1]
+        matches.sort(reverse=True)
+        return matches[0][4]
 
     def load_instrument_or_effect(
         self, track_index: int, uri: str
