@@ -82,6 +82,32 @@ class EmbeddingRef(BaseModel):
     reference: str | None = None  # id/vector ref, not necessarily inline vector
 
 
+class GrooveFingerprint(BaseModel):
+    """Measured groove signature, stored so it is never recomputed.
+
+    Content-addressed by the asset's sha256 and versioned by GROOVE_VERSION. The
+    genre block is TensorFlow inference, so its status is recorded explicitly:
+    a machine without the models must not retry the same file forever.
+    """
+
+    version: str = "groove-v1"
+    bpm: float | None = None
+    bpm_method: str | None = None      # which estimator produced bpm, and on what material
+    bpm_label: float | None = None     # tempo the pack states in the filename, when it does
+    beat_confidence: float | None = None
+    onsets: int | None = None
+    onsets_per_s: float | None = None
+    percussive_over_harmonic: float | None = None
+    percussive_band_share_db: dict[str, float] = Field(default_factory=dict)
+    grid: dict = Field(default_factory=dict)
+    key: str | None = None
+    key_strength: float | None = None
+    clipping: bool | None = None
+    genre_status: str = "SKIPPED"          # OK | SKIPPED | UNAVAILABLE | FAILED
+    genre_discogs400: list[dict] = Field(default_factory=list)
+    computed_at: str | None = None
+
+
 class SampleAsset(BaseModel):
     id: str
     path: str
@@ -101,6 +127,7 @@ class SampleAsset(BaseModel):
     classification_confidence: float | None = None
     tags: list[str] = Field(default_factory=list)
     provenance: dict = Field(default_factory=dict)
+    groove: GrooveFingerprint | None = None
     status: AssetStatus = AssetStatus.INDEXED
     error: str | None = None
 
@@ -108,6 +135,7 @@ class SampleAsset(BaseModel):
 class LibraryIndex(BaseModel):
     version: int = 1
     analysis_version: str = "sample-library-v1"
+    groove_version: str = ""
     roots: list[str] = Field(default_factory=list)
     assets: dict[str, SampleAsset] = Field(default_factory=dict)  # keyed by sha256
     duplicates: dict[str, list[str]] = Field(default_factory=dict)  # sha256 -> extra paths
