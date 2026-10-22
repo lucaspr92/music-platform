@@ -22,6 +22,14 @@ dev = ["pytest>=8.0"]
 perception = ["torch>=2.0", "transformers>=5.0"]
 soniq = ["websocket-client>=1.9"]
 mcp = ["mcp>=2.2,<3"]
+# Librosa is ISC (permissive) and pure Python: wheel is py3-none-any.
+analysis = ["librosa>=1.0,<2.0"]
+# Essentia is AGPL-3.0 and its pre-trained models are NonCommercial (CC BY-NC-SA/ND):
+# using this extra is a deliberate, recorded product decision that carries the licence
+# obligation. Pinned because wheels are built per CPython version (the newest release
+# ships cp314 only) and because there are NO Windows wheels: on Windows pip cannot
+# install this extra at all, it needs a source build (waf + Eigen/FFmpeg/TagLib) or WSL.
+essentia = ["essentia==2.1b6.dev1389", "essentia-tensorflow==2.1b6.dev1389"]
 
 [project.scripts]
 copilot = "copilot.cli:main"

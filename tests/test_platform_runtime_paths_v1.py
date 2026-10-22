@@ -5,6 +5,14 @@ from __future__ import annotations
 import os
 from pathlib import Path
 
+import pytest
+
+from copilot.platform.model_paths import (
+    MODELS_ROOT_VARIABLE,
+    essentia_model_path,
+    essentia_models_dir,
+    models_root,
+)
 from copilot.platform.plugin_paths import (
     WINDOWS_VST2_DIRECTORIES,
     WINDOWS_VST3_DIRECTORY,
@@ -77,3 +85,27 @@ def test_serum_candidates_keep_platform_install_locations() -> None:
     assert str(WINDOWS_VST3_DIRECTORY / "Serum 2.vst3") in paths
     assert str(WINDOWS_VST2_DIRECTORIES[0] / "Serum.dll") in paths
     assert str(WINDOWS_VST2_DIRECTORIES[1] / "Serum.dll") in paths
+
+
+def test_models_root_honours_environment_override(monkeypatch, tmp_path: Path) -> None:
+    monkeypatch.setenv(MODELS_ROOT_VARIABLE, str(tmp_path / "models"))
+    assert models_root() == tmp_path / "models"
+    assert essentia_models_dir() == tmp_path / "models" / "essentia"
+
+
+def test_models_root_defaults_under_runtime_root(monkeypatch) -> None:
+    monkeypatch.delenv(MODELS_ROOT_VARIABLE, raising=False)
+    monkeypatch.delenv(RUNTIME_ROOT_VARIABLE, raising=False)
+    monkeypatch.setattr(os, "name", "posix")
+    assert models_root() == Path.home() / "music-platform-runtime" / "models"
+
+
+def test_essentia_model_path_resolves_bare_name(monkeypatch, tmp_path: Path) -> None:
+    monkeypatch.setenv(MODELS_ROOT_VARIABLE, str(tmp_path))
+    assert essentia_model_path("weights.pb") == tmp_path / "essentia" / "weights.pb"
+
+
+def test_essentia_model_path_rejects_anything_but_a_bare_name() -> None:
+    for bad in ("", "   ", "../evil.pb", "dir/model.pb", "dir\\model.pb"):
+        with pytest.raises(ValueError):
+            essentia_model_path(bad)

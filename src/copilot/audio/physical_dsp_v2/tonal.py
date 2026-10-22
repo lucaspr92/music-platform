@@ -61,7 +61,7 @@ def analyze_tonal(
             time_span=time_span,
             values=[],
             quality=DspQuality.UNSUPPORTED,
-            limitations=[sc.limitation, *limitations],
+            limitations=[item for item in (sc.limitation, *limitations) if item is not None],
             provider_id="scipy",
             provider_version=sc.version,
             method="unavailable",

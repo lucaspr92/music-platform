@@ -1,4 +1,10 @@
-"""Internal DSP providers. Producer Runtime must not import these objects."""
+"""Internal DSP providers. Producer Runtime must not import these objects.
+
+Licence note: Essentia is AGPL-3.0 and its pre-trained models are NonCommercial
+(CC BY-NC-SA/ND). Using it is a deliberate, recorded product decision -- the
+provider reports what is actually installed instead of hiding it, and the
+obligation is carried in `pyproject.toml` (extra `essentia`) and in the tests.
+"""
 
 from __future__ import annotations
 
@@ -98,15 +104,23 @@ def librosa_status() -> ProviderStatus:
 
 
 def essentia_status() -> ProviderStatus:
-    return ProviderStatus(
-        "essentia",
-        False,
-        "license-blocked",
-        DspLimitation(
-            "ESSENTIA_LICENSE_BLOCKED",
-            "Essentia is AGPL-3.0 and is not imported. Key/loudness/MIR from Essentia are unsupported.",
-        ),
-    )
+    """Report the installed Essentia, not the licence posture.
+
+    An available provider must not carry a limitation: `_inventory_limitations`
+    only appends limitations for unavailable providers, and `tonal.analyze_tonal`
+    puts this object into a validated ``list[DspLimitation]``.
+    """
+    try:
+        import essentia  # type: ignore
+
+        return ProviderStatus("essentia", True, _module_version(essentia, "installed"))
+    except Exception as exc:  # noqa: BLE001
+        return ProviderStatus(
+            "essentia",
+            False,
+            "missing",
+            DspLimitation("ESSENTIA_UNAVAILABLE", f"essentia is not installed: {exc}"),
+        )
 
 
 def require(status: ProviderStatus) -> DspLimitation | None:
