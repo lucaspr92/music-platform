@@ -14,6 +14,7 @@ from __future__ import annotations
 import hashlib
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
+from pathlib import PureWindowsPath
 from typing import Any
 
 from copilot.schemas.session import MidiNote
@@ -105,11 +106,23 @@ def sha256_file(path: Path) -> str:
     return digest.hexdigest()
 
 
+def resolve_relative(core_library: Path, relative_path: str) -> Path:
+    """Resolve a bank-relative path on any host.
+
+    Live documents its factory content with Windows separators, and on macOS a
+    backslash is an ordinary filename character, so joining the raw value onto a
+    root looks for one file with separators inside its name. PureWindowsPath
+    accepts either separator, which is the same normalisation the sample library
+    and the studio workbench already perform.
+    """
+    return Path(core_library).joinpath(*PureWindowsPath(relative_path).parts)
+
+
 def kit_definition(core_library: Path) -> dict[str, Any]:
     """Resolve every sound on disk. Missing files fail closed: no substitution."""
     rows = []
     for item in KIT:
-        path = Path(core_library) / item.relative_path
+        path = resolve_relative(core_library, item.relative_path)
         if not path.is_file():
             raise FileNotFoundError(f"KIT_SOUND_MISSING: {item.role}: {path}")
         rows.append({**asdict(item), "track_name": item.track_name, "path": str(path),
@@ -139,6 +152,34 @@ SECTIONS = (
 KEY = "G minor"
 G1, BB1, D2, F1, F2, G2 = 43, 46, 50, 41, 53, 55
 GM7_VOICING = (58, 62, 65, 67)  # Bb2 D3 F3 G3
+
+TONIC_SEMITONES = {"C": 0, "C#": 1, "Db": 1, "D": 2, "D#": 3, "Eb": 3, "E": 4, "F": 5,
+                   "F#": 6, "Gb": 6, "G": 7, "G#": 8, "Ab": 8, "A": 9, "A#": 10, "Bb": 10, "B": 11}
+
+
+def transposition_to(key: str) -> int:
+    """Semitone offset that renders this G-minor material in ``key``.
+
+    Minor only. The kit's material is a minor-key groove, so a major mode fails
+    closed instead of silently changing the music. The offset is the shortest
+    motion (G -> D is -5, not +7) so the bass keeps its register.
+    """
+    parts = key.split()
+    tonic = parts[0]
+    mode = parts[1].lower() if len(parts) > 1 else "minor"
+    if mode != "minor":
+        raise ValueError(f"UNSUPPORTED_MODE: {key}: the kit material is minor")
+    if tonic not in TONIC_SEMITONES:
+        raise ValueError(f"UNSUPPORTED_TONIC: {key}")
+    delta = (TONIC_SEMITONES[tonic] - TONIC_SEMITONES["G"]) % 12
+    return delta - 12 if delta > 6 else delta
+
+
+def transpose_notes(notes: list[MidiNote], semitones: int) -> list[MidiNote]:
+    """Shift pitched notes. The caller decides who is pitched: one-shots are not."""
+    if not semitones:
+        return list(notes)
+    return [note.model_copy(update={"pitch": note.pitch + semitones}) for note in notes]
 
 
 def kick_notes() -> list[MidiNote]:
@@ -231,11 +272,21 @@ GENERATORS = {
 }
 
 
-def groove_plan() -> dict[str, Any]:
-    """Structured 16-bar plan; every role is one 64-beat clip placed at bar 1."""
+def groove_plan(tempo_bpm: float = TEMPO_BPM, key: str = KEY) -> dict[str, Any]:
+    """Structured 16-bar plan; every role is one 64-beat clip placed at bar 1.
+
+    ``tempo_bpm`` and ``key`` default to the frozen V1 material, so the default
+    plan carries the same tempo, key and notes that shipped. Any other MINOR key
+    transposes the PITCHED roles only: one-shot roles trigger at
+    ``ONE_SHOT_PITCH``, and moving that pitch would select a different sample
+    pitch rather than transpose the key.
+    """
+    semitones = transposition_to(key)
     roles = {}
     for item in KIT:
         notes = GENERATORS[item.role]()
+        if not item.is_one_shot:
+            notes = transpose_notes(notes, semitones)
         roles[item.role] = {
             "track_name": item.track_name,
             "clip_index": 0,
@@ -246,10 +297,11 @@ def groove_plan() -> dict[str, Any]:
         }
     return {
         "milestone": MILESTONE,
-        "tempo_bpm": TEMPO_BPM,
+        "tempo_bpm": float(tempo_bpm),
         "meter": list(METER),
         "bars": BARS,
-        "key": KEY,
+        "key": key,
+        "key_transposition_semitones": semitones,
         "sections": list(SECTIONS),
         "sidechain": "BLOCKED_BY_CONTROL_SURFACE",
         "sidechain_note": "No kick->bass sidechain or emulated ducking. Bass onsets avoid every kick.",

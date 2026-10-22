@@ -37,7 +37,9 @@ def make_batch(plan: dict) -> AbletonBatch:
             notes=tuple(MidiNote(**row) for row in plan["roles"][item.role]["notes"]),
             volume=VOLUMES[item.role],
         ))
-    return AbletonBatch(tempo=kit.TEMPO_BPM, length_beats=kit.CLIP_BEATS,
+    # Tempo comes from the plan, so a plan rendered at another tempo is honoured;
+    # the default plan still carries kit.TEMPO_BPM.
+    return AbletonBatch(tempo=float(plan["tempo_bpm"]), length_beats=kit.CLIP_BEATS,
                         tracks=tuple(specs))
 
 

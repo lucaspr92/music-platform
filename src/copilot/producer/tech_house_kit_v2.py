@@ -109,10 +109,14 @@ GENERATORS = {
 }
 
 
-def groove_plan() -> dict:
+def groove_plan(tempo_bpm: float = v1.TEMPO_BPM, key: str = v1.KEY) -> dict:
+    """Same contract as V1: defaults frozen, other MINOR keys transpose pitched roles only."""
+    semitones = v1.transposition_to(key)
     roles = {}
     for sound in KIT:
         notes = GENERATORS[sound.role]()
+        if not sound.is_one_shot:
+            notes = v1.transpose_notes(notes, semitones)
         roles[sound.role] = {
             "track_name": f"KIT DIRECT V2 - {sound.role}",
             "clip_index": 0, "length_beats": v1.CLIP_BEATS,
@@ -121,8 +125,9 @@ def groove_plan() -> dict:
             "notes": [note.model_dump(mode="json") for note in notes],
         }
     return {
-        "milestone": MILESTONE, "tempo_bpm": v1.TEMPO_BPM,
-        "meter": list(v1.METER), "bars": v1.BARS, "key": v1.KEY,
+        "milestone": MILESTONE, "tempo_bpm": float(tempo_bpm),
+        "meter": list(v1.METER), "bars": v1.BARS, "key": key,
+        "key_transposition_semitones": semitones,
         "sections": list(v1.SECTIONS), "sidechain": "DEFERRED",
         "automation": "DEFERRED", "roles": roles,
     }
@@ -131,7 +136,7 @@ def groove_plan() -> dict:
 def kit_definition(core_library: Path) -> dict:
     rows = []
     for sound in KIT:
-        path = core_library / sound.relative_path
+        path = v1.resolve_relative(core_library, sound.relative_path)
         if not path.is_file():
             raise FileNotFoundError(f"KIT_SOUND_MISSING: {sound.role}: {path}")
         rows.append({**asdict(sound), "path": str(path),
