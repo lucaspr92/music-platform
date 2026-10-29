@@ -77,7 +77,7 @@ def main(stems_dir: str, structure_path: Path | None = None) -> dict:
     report: dict = {"stems_dir": str(stems), "files": {}, "sections": []}
 
     loaded: dict[str, tuple] = {}
-    for name in ("drums", "bass", "vocals", "other"):
+    for name in ("drums", "bass", "vocals", "other", "piano", "guitar"):
         candidates = list(stems.glob(f"{name}.*"))
         if not candidates:
             continue
