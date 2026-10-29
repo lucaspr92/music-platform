@@ -25,7 +25,7 @@ def to_notes(items: list[dict]) -> list[MidiNote]:
             for n in items]
 
 
-def main(plan_path: Path) -> int:
+def main(plan_path: Path, append: bool = False) -> int:
     plan = json.loads(plan_path.read_text(encoding="utf-8"))
     daw = AbletonTcpAdapter()
     daw.connect()
@@ -37,14 +37,25 @@ def main(plan_path: Path) -> int:
         daw.set_tempo(float(plan["bpm"]))
 
         snap = daw.snapshot(include_notes=False)
-        for track in sorted((t for t in snap.tracks if t.name.startswith(PREFIX)),
-                            key=lambda t: t.index, reverse=True):
-            daw._command("delete_track", {"track_index": track.index}, side_effect=True)
+        existing = {track.name for track in snap.tracks}
+        if append:
+            # Append mode: never delete. A rebuild wipes manual edits and, if it fails halfway,
+            # leaves the set in an in-doubt state that has already cost us one session.
+            present = [name for name in existing if name.startswith(PREFIX)]
+            print(f"  append: {len(present)} tracks REPLICA ya presentes; solo se agrega lo que falta")
+        else:
+            for track in sorted((t for t in snap.tracks if t.name.startswith(PREFIX)),
+                                key=lambda t: t.index, reverse=True):
+                daw._command("delete_track", {"track_index": track.index}, side_effect=True)
 
         palette, placements = plan["library"]["palette"], plan["library"]["placements"]
         for element, runs in placements.items():
             choice = palette.get(element)
             if not choice:
+                continue
+            if append and (PREFIX + element) in existing:
+                print(f"  {element:10s} ya existe, se deja como esta")
+                report["tracks"][element] = {"status": "kept"}
                 continue
             index = int(daw.create_audio_track(PREFIX + element)["index"])
             clip = daw.create_audio_clip(index, 0, choice["path"])
@@ -67,6 +78,9 @@ def main(plan_path: Path) -> int:
             print(f"  {element:8s} track {index:>2}  {placed:>3} clips  {Path(choice['path']).name}")
 
         for element, info in (plan.get("core") or {}).items():
+            if append and (PREFIX + element + " (core)") in existing:
+                print(f"  core {element:6s} ya existe, se deja como esta")
+                continue
             index = int(daw.create_audio_track(PREFIX + element + " (core)")["index"])
             daw.create_audio_clip(index, 0, info["wav"])
             daw.duplicate_clip_to_arrangement(index, 0, 0.0)
@@ -76,6 +90,9 @@ def main(plan_path: Path) -> int:
             print(f"  core    {element:8s} track {index:>2}  1 clip  {Path(info['wav']).name}")
 
         for name, spec in plan["synth"].items():
+            if append and spec.get("track") in existing:
+                print(f"  synth {name:5s} ya existe, se deja como esta")
+                continue
             index = int(daw.create_midi_track(spec["track"])["index"])
             load = daw.load_instrument_or_effect(index, spec["device_uri"])
             device_name = load.get("item_name")
@@ -115,4 +132,5 @@ def main(plan_path: Path) -> int:
 
 if __name__ == "__main__":
     path = Path(sys.argv[sys.argv.index("--plan") + 1]) if "--plan" in sys.argv else SCRATCH / "tribal_replica_plan_v3.json"
-    raise SystemExit(main(path))
+    append = "--append" in sys.argv
+    raise SystemExit(main(path, append))
