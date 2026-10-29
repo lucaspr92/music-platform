@@ -1,0 +1,267 @@
+{
+  "version": "v15_fx_music",
+  "reference": "Gino Da Koda, Le Modo - Tudm feat. Le Modo (Original Mix) [Lisa_s Kickback].mp3",
+  "bpm": 128.01,
+  "bar_s": 1.8749,
+  "total_bars": 193,
+  "library": {
+    "palette": {
+      "kick": {
+        "path": "/Volumes/Lucas/Samples/Production Music Live - Tech House Sound Pack Drift/PML - Tech House - Sample Pack/Loops/Kick Loops/PML_TH3_Kick_Loop_009_128BPM_G.wav",
+        "filename": "PML_TH3_Kick_Loop_009_128BPM_G.wav",
+        "bpm_label": 128.0,
+        "tonic": null
+      },
+      "hats": {
+        "path": "/Volumes/Lucas/Samples/Phantom Sounds - Fiesta Vol.4 Terrace Tech House Pack/Drum Loops/Hat Loops/Phantom - Fiesta 4 Hat Loop 9 - 128 BPM.wav",
+        "filename": "Phantom - Fiesta 4 Hat Loop 9 - 128 BPM.wav",
+        "bpm_label": 128.0,
+        "tonic": null
+      },
+      "perc_a": {
+        "path": "/Volumes/Lucas/Samples/Phantom Sounds - Fiesta Vol.4 Terrace Tech House Pack/Drum Loops/Percussion Loops/Phantom - Fiesta 4 Percussion Loop 12 - 128 BPM.wav",
+        "filename": "Phantom - Fiesta 4 Percussion Loop 12 - 128 BPM.wav",
+        "bpm_label": 128.0,
+        "tonic": null
+      },
+      "perc_b": {
+        "path": "/Volumes/Lucas/Samples/Phantom Sounds - Fiesta Vol.4 Terrace Tech House Pack/Drum Loops/Percussion Loops/Phantom - Fiesta 4 Percussion Loop 5 - 128 BPM.wav",
+        "filename": "Phantom - Fiesta 4 Percussion Loop 5 - 128 BPM.wav",
+        "bpm_label": 128.0,
+        "tonic": null
+      },
+      "shaker": {
+        "path": "/Volumes/Lucas/Samples/Phantom Sounds - Django Groovy Tech House/Bonus #1 - Flamingo - Shaker Loops/Phantom - Flamingo Shaker Loop 14 - 128 BPM.wav",
+        "filename": "Phantom - Flamingo Shaker Loop 14 - 128 BPM.wav",
+        "bpm_label": 128.0,
+        "tonic": null
+      },
+      "bass": {
+        "path": "/Volumes/Lucas/Samples/Phantom Sounds - Fiesta Vol.4 Terrace Tech House Pack/Bass Loops/Phantom - Fiesta 4 Bass Loop 23 - 128 BPM Dm.wav",
+        "filename": "Phantom - Fiesta 4 Bass Loop 23 - 128 BPM Dm.wav",
+        "bpm_label": 128.0,
+        "tonic": "Dm"
+      },
+      "buildup": {
+        "path": "/Volumes/Lucas/Samples/Production Music Live - Tech House Sound Pack Drift/PML - Tech House - Sample Pack/Loops/Fill and Build Loops/PML_TH3_Buildup_Loop_002_130BPM.wav",
+        "filename": "PML_TH3_Buildup_Loop_002_130BPM.wav",
+        "bpm_label": 128.0,
+        "tonic": null
+      },
+      "fill": {
+        "path": "/Volumes/Lucas/Samples/Production Music Live - Tech House Sound Pack Drift/PML - Tech House - Sample Pack/Loops/Fill and Build Loops/PML_TH3_Fill_Loop_002_128BPM_Ring.wav",
+        "filename": "PML_TH3_Fill_Loop_002_128BPM_Ring.wav",
+        "bpm_label": 128.0,
+        "tonic": null
+      },
+      "synth": {
+        "path": "/Volumes/Lucas/Samples/Phantom Sounds - Fiesta Vol.4 Terrace Tech House Pack/Synth Loops/Phantom - Fiesta 4 Synth Loop 15 - 128 BPM Dm.wav",
+        "filename": "Phantom - Fiesta 4 Synth Loop 15 - 128 BPM Dm.wav",
+        "bpm_label": 128.0,
+        "tonic": "Dm"
+      },
+      "vocal": {
+        "path": "/Volumes/Lucas/Samples/Phantom Sounds - Fiesta Vol.4 Terrace Tech House Pack/Vocal Loops/Phantom - Fiesta 4 Vocal Loop 3 - 128 BPM.wav",
+        "filename": "Phantom - Fiesta 4 Vocal Loop 3 - 128 BPM.wav",
+        "bpm_label": 128.0,
+        "tonic": null
+      }
+    },
+    "placements": {
+      "kick": [
+        {
+          "start_bar": 17,
+          "end_bar": 107
+        },
+        {
+          "start_bar": 129,
+          "end_bar": 186
+        }
+      ],
+      "hats": [
+        {
+          "start_bar": 0,
+          "end_bar": 193
+        }
+      ],
+      "perc_a": [
+        {
+          "start_bar": 9,
+          "end_bar": 193
+        }
+      ],
+      "perc_b": [
+        {
+          "start_bar": 41,
+          "end_bar": 193
+        }
+      ],
+      "shaker": [
+        {
+          "start_bar": 0,
+          "end_bar": 193
+        }
+      ],
+      "bass": [
+        {
+          "start_bar": 33,
+          "end_bar": 107
+        },
+        {
+          "start_bar": 129,
+          "end_bar": 193
+        }
+      ],
+      "buildup": [
+        {
+          "start_bar": 124.1,
+          "end_bar": 129
+        }
+      ],
+      "fill": [
+        {
+          "start_bar": 104,
+          "end_bar": 107
+        }
+      ],
+      "synth": [
+        {
+          "start_bar": 51,
+          "end_bar": 107
+        },
+        {
+          "start_bar": 129,
+          "end_bar": 178
+        }
+      ],
+      "vocal": [
+        {
+          "start_bar": 59,
+          "end_bar": 107
+        },
+        {
+          "start_bar": 137,
+          "end_bar": 178
+        }
+      ]
+    }
+  },
+  "synth": {},
+  "rhythm": {
+    "bpm": 128.008,
+    "sixteenth_s": 0.1172,
+    "bass_bar_histogram": [
+      146,
+      119,
+      126,
+      23,
+      96,
+      7,
+      189,
+      6,
+      89,
+      131,
+      103,
+      118,
+      99,
+      60,
+      170,
+      10
+    ],
+    "guitar_bar_histogram": [
+      7,
+      10,
+      14,
+      14,
+      2,
+      0,
+      12,
+      13,
+      2,
+      3,
+      11,
+      14,
+      3,
+      5,
+      22,
+      42
+    ]
+  },
+  "evidence": {
+    "bass_median_db": -17.1,
+    "stab_median_db": -45.4
+  },
+  "limits": [
+    "no melodic line exists in the reference; the hook is harmonic",
+    "stabs use the init patch: Serum 2 exposes one parameter, so no patch shaping",
+    "master tune cannot be set to the measured -23 cents yet",
+    "preset load is proven to answer, not yet independently verified"
+  ],
+  "revised_from": "v3",
+  "removed_elements": {
+    "bass_loop": "replaced by the transcribed part in v9"
+  },
+  "revisions": {
+    "from": "v3.2",
+    "changes": [
+      "kick and hat loops replaced by the rendered percussive core",
+      "core kick and hats come from measured onsets on the drums stem",
+      "core clap is an assumed backbeat (not isolable from that stem)"
+    ],
+    "v8": "v8: core one-shots chosen by measuring the whole track, not the sample in isolation",
+    "v9": "v9: bass loop removed, transcribed part drives Serum 2",
+    "v11": "v11: measured composition (no octave folding, no scale snapping, root timeline)",
+    "v12": "v12: written to genre conventions; contaminated stem-derived parts discarded"
+  },
+  "core": {},
+  "gains": {
+    "kick": 0.75,
+    "hats": 0.55,
+    "perc_a": 0.5,
+    "perc_b": 0.45,
+    "shaker": 0.35,
+    "bass": 0.4,
+    "buildup": 0.38,
+    "fill": 0.42,
+    "synth": 0.32,
+    "vocal": 0.26
+  },
+  "mix_report": {
+    "method": "core at full gain (measured +0.027 over the previous live levels), uniform 0.8 headroom",
+    "measured": {
+      "core_full": 0.727,
+      "core_previous_live_levels": 0.6996,
+      "core_full_times_0.8": 0.727
+    },
+    "rejected": "constrained nnls on global band profile scored 0.690: it zeroed the kick and hats",
+    "blocked": "per-section balance needs automation; the bridge cannot verify automation writes"
+  },
+  "phase_results": {
+    "0_metric": {
+      "baseline_v3_2": 0.608,
+      "sanity_ref_vs_ref": 1.0,
+      "noise_control": 0.323
+    },
+    "1_core": {
+      "v4": 0.727,
+      "delta_vs_v3_2": 0.119
+    },
+    "2_percussion_reselect": {
+      "v5": 0.718,
+      "verdict": "REJECTED by measurement"
+    },
+    "3_1_bass": {
+      "chosen": "Fiesta 4 Bass Loop 23 - 128 BPM Dm",
+      "verdict": "already the best measured"
+    },
+    "4_1_stabs": {
+      "best_loop": "Synth Loop 21",
+      "score": 0.7325,
+      "delta": 0.0055,
+      "verdict": "marginal"
+    },
+    "5_mix": {
+      "verdict": "global gains worse; core level +0.027 kept; clipping handled with headroom"
+    }
+  }
+}
