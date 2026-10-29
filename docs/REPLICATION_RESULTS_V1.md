@@ -82,3 +82,24 @@ bass part now exact by transcription. The cap is not arrangement any more: it is
 **sound design**. Serum 2 exposes one parameter through the bridge, so a transcribed part can be
 rhythmically and harmonically exact and still not sound like theirs. Until the bridge enumerates
 plugin parameters, element timbre is the ceiling and it is measurable per element from now on.
+
+## v9 built in Live: the bass is the transcribed part
+
+Built into a clean set and verified by readback: tempo 128.01, 9 REPLICA tracks, 119 clips,
+bass on Serum 2 with **885 notes written and 885 read back**, the library bass loop removed.
+
+**The score must not be read as an improvement.** Replication over the four audio elements is
+0.7142, and the baseline over those same four elements was also 0.7142: `(0.841 + 0.488 + 0.798 +
+0.730) / 4`. Nothing about the audio changed, because v9 changed only the bass. What changed is
+that the bass is no longer scored at 0.526 as a loop: its part is now exact by transcription and
+its audio cannot be rendered offline (no offline Serum), so it is reported as PART-ONLY instead of
+being scored as silence. Anything that presents 0.7142 against 0.6765 as progress is comparing
+different element sets.
+
+## Still open, in order
+
+1. **R5 percussion**: 0.730 with pattern 0.684, and the loops are 126 BPM warped to 128 — the
+   likely cause of the drift. One-shots placed on measured onsets is the next measured attempt.
+2. **R6 fx placement**: 1 riser and 12 strong transients are detected and nothing is placed yet.
+3. **R4 harmony**: per-onset chords are rejected; section-level chords are usable from bar 25.
+4. **R8**: mix and master, untouched by scope.

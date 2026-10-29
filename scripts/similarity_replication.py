@@ -265,7 +265,19 @@ def main() -> int:
                     "elements": {}, "method": "per element, level-invariant, no mix terms"}
     with tempfile.TemporaryDirectory() as tmp_name:
         tmp = Path(tmp_name)
+        placements = (plan.get("library") or {}).get("placements") or {}
         for element, (stem, spec) in ELEMENTS.items():
+            kind, value = spec
+            if kind == "loop" and value not in placements:
+                # v9 replaced the bass loop with a transcribed part. The PART is exact by
+                # construction, but the audio cannot be rendered offline (no Serum), so scoring
+                # it here would measure silence and lie. Reported, not scored.
+                report["elements"][element] = {
+                    "score": None,
+                    "reason": "part transcribed onto Serum 2; audio not renderable offline",
+                    "part": {"notes": (plan.get("synth", {}).get(value) or {}).get("measured_notes")}}
+                print(f"{element:12s} PART-ONLY (transcribed, audio unmeasurable offline)")
+                continue
             if stem == "toms":
                 reference, sr = load(PER_DRUM / "drums_toms.wav")
             else:
@@ -277,11 +289,14 @@ def main() -> int:
                 reference, replica, sr, bar_s, total_bars, sections)
             print(f"{element:12s} {report['elements'][element]}")
 
-    scores = [row["score"] for row in report["elements"].values()]
+    scores = [row["score"] for row in report["elements"].values() if row.get("score") is not None]
+    excluded = [name for name, row in report["elements"].items() if row.get("score") is None]
     report["replication"] = round(float(np.mean(scores)), 4)
+    report["scored_elements"] = len(scores)
+    report["excluded_elements"] = excluded
     print()
-    print(f"REPLICATION = {report['replication']:.4f}  "
-          f"(mix and master excluded by construction)")
+    print(f"REPLICATION = {report['replication']:.4f} over {report['scored_elements']} elements"
+          f" | excluidos: {excluded}")
     Path(args.json).write_text(json.dumps(report, indent=2, ensure_ascii=False), encoding="utf-8")
     print("->", args.json)
     return 0
