@@ -34,7 +34,8 @@ GAINS = {"kick": 0.85, "hats": 0.42, "clap": 0.55}
 
 
 def load_oneshot(relative_path: str) -> tuple[np.ndarray, int]:
-    path = kit.resolve_relative(ableton_core_library(), relative_path)
+    direct = Path(relative_path)
+    path = direct if direct.is_file() else kit.resolve_relative(ableton_core_library(), relative_path)
     if not path.is_file():
         raise FileNotFoundError(f"CORE_ONESHOT_MISSING: {path}")
     audio, sr = sf.read(str(path), always_2d=True, dtype="float32")
@@ -54,7 +55,17 @@ def place(buffer: np.ndarray, sample: np.ndarray, start_s: float, gain: float) -
     return 1
 
 
-def main() -> int:
+def main(argv: list[str] | None = None) -> int:
+    import argparse
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--kick", default=None, help="absolute path or core-library relative path")
+    parser.add_argument("--hats", default=None)
+    parser.add_argument("--clap", default=None)
+    parser.add_argument("--out-dir", default=None)
+    args = parser.parse_args(argv)
+    global SCRATCH
+    out_dir = Path(args.out_dir) if args.out_dir else SCRATCH
+    out_dir.mkdir(parents=True, exist_ok=True)
     onsets = json.loads(ONSETS.read_text(encoding="utf-8"))
     structure = json.loads(STRUCTURE.read_text(encoding="utf-8"))
     bar_s = float(structure["bar_s"])
@@ -67,6 +78,10 @@ def main() -> int:
     sources = {"kick": "Samples/One Shots/Drums/Kick/Kick 909 1.aif",
                "hats": "Samples/One Shots/Drums/Hihat/Hihat Closed 909.aif",
                "clap": "Samples/One Shots/Drums/Clap/Clap 909.aif"}
+    for name in ("kick", "hats", "clap"):
+        override = getattr(args, name)
+        if override:
+            sources[name] = override
 
     buffers = {}
     for element in ("kick", "hats", "clap"):
@@ -97,7 +112,7 @@ def main() -> int:
         peak = float(np.max(np.abs(buffer)) or 1.0)
         if peak > 0.99:
             buffer *= 0.99 / peak
-        out = SCRATCH / f"core_{element}.wav"
+        out = out_dir / f"core_{element}.wav"
         sf.write(str(out), buffer, SR)
         bars = len(buffer) / SR / bar_s
         report["elements"][element] = {"instances": count, "per_bar": round(count / bars, 2),
