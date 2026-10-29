@@ -192,6 +192,11 @@ class WavCheck(BaseModel):
     errors: list[str] = Field(default_factory=list)
     finite_samples: bool = True
     frames: int | None = None
+    # A stereo file can carry one silent channel and still look healthy: the channel COUNT and
+    # the MONO downmix both pass. These per-channel figures are what make that visible.
+    channel_rms: list[float] | None = None
+    channel_peak: list[float] | None = None
+    stereo_correlation: float | None = None
 
 
 def capture_dir() -> Path:
@@ -1109,6 +1114,13 @@ def validate_wav(
         mono = np.mean(data, axis=1)
         rms = float(np.sqrt(np.mean(mono**2))) if finite else float("nan")
         peak = float(np.max(np.abs(mono))) if finite else float("nan")
+        channel_rms = [float(np.sqrt(np.mean(data[:, i] ** 2))) for i in range(channels)] if finite else []
+        channel_peak = [float(np.max(np.abs(data[:, i]))) for i in range(channels)] if finite else []
+        stereo_correlation: float | None = None
+        if channels == 2 and finite:
+            left, right = data[:, 0], data[:, 1]
+            if float(np.std(left)) > 0.0 and float(np.std(right)) > 0.0:
+                stereo_correlation = float(np.corrcoef(left, right)[0, 1])
     except Exception as exc:  # noqa: BLE001 - report observed failure
         try:
             with wave.open(str(path), "rb") as handle:
@@ -1146,6 +1158,14 @@ def validate_wav(
             errors.append(f"silent unexpected capture rms={rms}")
         if peak <= SILENCE_PEAK:
             errors.append(f"silent unexpected capture peak={peak}")
+        # per-channel: a silent channel is a routing failure, not a quiet take
+        for index, (ch_rms, ch_peak) in enumerate(zip(channel_rms, channel_peak)):
+            if ch_rms <= SILENCE_RMS or ch_peak <= SILENCE_PEAK:
+                errors.append(
+                    f"channel {index} is silent (rms={ch_rms:.2e}, peak={ch_peak:.2e})")
+        if channels >= 2 and stereo_correlation is None:
+            errors.append(
+                "a channel is constant: stereo correlation is undefined, capture routing suspect")
     return WavCheck(
         exists=True,
         size_bytes=size,
@@ -1158,6 +1178,9 @@ def validate_wav(
         ok=not errors,
         errors=errors,
         finite_samples=finite,
+        channel_rms=channel_rms,
+        channel_peak=channel_peak,
+        stereo_correlation=stereo_correlation,
         frames=frames,
     )
 
